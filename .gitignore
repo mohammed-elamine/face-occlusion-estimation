@@ -1,3 +1,43 @@
 # Data directory
 data/**
 !data/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+
+# Ruff
+.ruff_cache/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# PyTorch
+*.pt
+*.pth
+*.ckpt
+
+# Logs & outputs
+*.log
+runs/
+outputs/
+wandb/
