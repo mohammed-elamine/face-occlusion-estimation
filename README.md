@@ -119,14 +119,36 @@ $$
 The metric rewards low overall error, strong performance on highly occluded samples, and balanced errors across female and male subsets.
 
 
+## Getting Started
+
+1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you don't have it.
+
+2. Clone and set up:
+
+   ```bash
+   git clone https://github.com/mohammed-elamine/face-occlusion-estimation.git
+   cd face-occlusion-estimation
+   make install
+   ```
+
+3. Run `make help` to see all available commands.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and guidelines.
+
+
 ## Project Map
 
 ```text
 face-occlusion-estimation/
+├── .github/workflows/      # CI pipelines
 ├── assets/
 │   ├── illustrations/      # Public-domain cartoon and meme fuel
 │   └── logos/              # Challenge logos
 ├── data/                   # Local data folder, not tracked
+├── scripts/                # Dev utility scripts
+├── src/face_occlusion/     # Main Python package
+├── Makefile                # Local dev commands (make help)
+├── pyproject.toml          # Project config & dependencies
 └── README.md
 ```
 
@@ -148,3 +170,12 @@ face-occlusion-estimation/
     <a href="https://openclipart.org/detail/168636/challenge-accepted">challenge accepted</a>
   </sub>
 </p>
+
+## Authors
+
+Built with caffeinated determination by:
+
+- **Mohammed Elamine** · [elamine.mohammed.14@gmail.com](mailto:elamine.mohammed.14@gmail.com)
+- **Sara El Mountassir** · [sara.elmountasser@telecom-paris.fr](mailto:sara.elmountasser@telecom-paris.fr)
+
+<sub>Two students vs. occluded faces. What could go wrong?</sub>
