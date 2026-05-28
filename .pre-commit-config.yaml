@@ -9,6 +9,11 @@ repos:
         args: ["--maxkb=500"]
       - id: check-merge-conflict
 
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.8.1
+    hooks:
+      - id: nbstripout
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.11.12
     hooks:
