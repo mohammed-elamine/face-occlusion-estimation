@@ -36,8 +36,27 @@ Thumbs.db
 *.pth
 *.ckpt
 
-# Logs & outputs
+# Logs
 *.log
 runs/
-outputs/
 wandb/
+
+# Outputs (keep folder layout via .gitkeep sentinels)
+outputs/**
+!outputs/.gitkeep
+!outputs/checkpoints/
+!outputs/checkpoints/.gitkeep
+!outputs/predictions/
+!outputs/predictions/.gitkeep
+!outputs/reports/
+!outputs/reports/.gitkeep
+!outputs/splits/
+!outputs/splits/.gitkeep
+
+# temporary files
+tmp/
+
+# Slurm logs
+*.out
+*.err
+slurm-*.out

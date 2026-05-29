@@ -1,0 +1,68 @@
+project:
+  name: face-occlusion-estimation
+  seed: 42
+  output_dir: outputs
+
+data:
+  train_csv: data/train.csv
+  test_csv: data/test_students.csv
+  image_root: data
+  image_col: filename
+  target_col: FaceOcclusion
+  gender_col: gender
+  id_col: filename            # no explicit id, use filename as unique id
+  # Genders are encoded as floats in the CSV. Female samples tend to have
+  # higher occlusion (hair covering the face), which matches gender=1.0.
+  female_value: 1.0
+  male_value: 0.0
+  target_scale: auto          # auto | unit | percent
+  val_size: 0.2
+  num_workers: 4
+
+split:
+  strategy: gender_occlusion_stratified
+  occlusion_bins: [0.0, 0.05, 0.10, 0.20, 0.40, 0.60, 1.0]
+  split_path: outputs/splits/baseline_split.csv
+
+model:
+  backbone: convnext_tiny.fb_in22k_ft_in1k
+  pretrained: true
+  output_activation: identity   # identity | sigmoid
+  dropout: 0.0
+
+training:
+  batch_size: 64
+  max_epochs: 20
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  loss: weighted_mse
+  optimizer: adamw
+  scheduler: cosine
+  precision: 16-mixed
+  gradient_clip_val: 1.0
+  early_stopping_patience: 5
+
+augmentation:
+  resize: 224
+  horizontal_flip_p: 0.5
+  color_jitter_p: 0.5
+  brightness: 0.10
+  contrast: 0.10
+  saturation: 0.05
+  rotation_degrees: 3
+
+logging:
+  use_wandb: false
+  wandb_project: face-occlusion-estimation
+  run_name: baseline-convnext-tiny
+  log_images: true
+  log_prediction_plots: true
+  log_images_every_n_epochs: 1
+  num_logged_images: 16
+
+checkpoint:
+  monitor: val/score
+  mode: min
+  save_top_k: 1
+  dirpath: outputs/checkpoints
+  filename: best

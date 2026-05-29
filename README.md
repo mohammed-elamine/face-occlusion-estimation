@@ -136,6 +136,46 @@ The metric rewards low overall error, strong performance on highly occluded samp
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and guidelines.
 
 
+## Baseline Pipeline
+
+A clean ConvNeXt-Tiny regression baseline lives under `src/face_occlusion/`
+and is driven by [`configs/baseline.yaml`](configs/baseline.yaml).
+
+```bash
+# 1. Sanity-check the data (paths, columns, target range, image readability).
+python scripts/validate_data.py --config configs/baseline.yaml
+
+# 2. Create a fixed gender x occlusion-bin stratified train/val split.
+python scripts/make_split.py --config configs/baseline.yaml
+
+# 3. Train the baseline. Logs to CSV by default; set logging.use_wandb=true for W&B.
+python scripts/train.py --config configs/baseline.yaml
+
+# 4. Generate test predictions / submission file from the best checkpoint.
+python scripts/predict_test.py \
+  --config configs/baseline.yaml \
+  --checkpoint outputs/checkpoints/best.ckpt
+```
+
+Design choices worth knowing:
+
+- **Backbone — `convnext_tiny.fb_in22k_ft_in1k`.** Strong ImageNet-22k features
+  with a small enough footprint to iterate quickly on a single GPU. Easy to
+  swap with any `timm` model via `model.backbone` in the config.
+- **Augmentation is conservative.** We avoid RandomErasing, heavy blur,
+  random crops and synthetic occlusion: they change the *true* face
+  visibility while the original label stays the same, which silently
+  corrupts supervision. Only horizontal flip, mild color jitter and a
+  small rotation are used.
+- **Metric is gender-aware.** Validation reports the official score
+  `(Err_F + Err_M)/2 + |Err_F - Err_M|`, so we keep `gender` in every batch
+  and stratify the validation split on `gender x occlusion_bin`.
+
+Validation predictions are written to `outputs/predictions/val_predictions.csv`
+for error analysis (per-sample target, raw and clipped predictions, absolute
+error, gender, path).
+
+
 ## Project Map
 
 ```text

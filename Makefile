@@ -4,7 +4,7 @@
 # Makefile – local dev commands for face-occlusion-estimation
 # -------------------------------------------------------------------
 
-.PHONY: help check-setup install lint format format-check pre-commit check clean
+.PHONY: help check-setup install setup-cluster lint format format-check pre-commit check clean
 
 help: ## Show this help message
 	@printf '\nUsage: make <target>\n\n'
@@ -20,6 +20,9 @@ check-setup: ## Verify prerequisites (uv, Python, etc.)
 install: check-setup ## Install project + dev dependencies with uv
 	uv sync --group dev
 	uv run pre-commit install
+
+setup-cluster: ## Set up the Python environment on a Slurm/GPU cluster
+	@bash scripts/setup_cluster_env.sh
 
 # -- Code quality --------------------------------------------------------
 
