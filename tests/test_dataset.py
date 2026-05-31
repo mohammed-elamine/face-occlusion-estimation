@@ -1,3 +1,5 @@
+"""Tests for dataset loading, metadata preservation and target scaling."""
+
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +17,7 @@ class _MiniCfg:
 
 @pytest.fixture
 def tiny_dataset(tmp_path: Path):
+    # Build real image files so the dataset test exercises path handling.
     img_dir = tmp_path / "imgs"
     img_dir.mkdir()
     rows = []

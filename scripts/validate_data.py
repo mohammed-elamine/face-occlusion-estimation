@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Validate the dataset: paths, images, columns, distributions."""
+"""Validate the configured dataset and write a lightweight data report."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
+    # The report is JSON-serializable so it can be inspected locally or in CI logs.
     report: dict = {"errors": [], "warnings": [], "stats": {}}
 
     train_csv = Path(cfg.data.train_csv)
@@ -66,7 +67,7 @@ def main() -> None:
             )
             report["stats"]["by_gender"] = stats_by_g.to_dict(orient="records")
 
-        # Image existence + openability
+        # Image existence + openability catches broken paths before training.
         if cfg.data.image_col in train.columns:
             paths = train[cfg.data.image_col].tolist()
             if args.max_image_check and args.max_image_check < len(paths):

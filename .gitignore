@@ -41,15 +41,13 @@ Thumbs.db
 runs/
 wandb/
 
-# Outputs (keep folder layout via .gitkeep sentinels)
+# Outputs and experiment artifacts (keep folder layout via .gitkeep sentinels)
 outputs/**
 !outputs/.gitkeep
-!outputs/checkpoints/
-!outputs/checkpoints/.gitkeep
-!outputs/predictions/
-!outputs/predictions/.gitkeep
-!outputs/reports/
-!outputs/reports/.gitkeep
+!outputs/experiments/
+!outputs/experiments/.gitkeep
+!outputs/slurm_logs/
+!outputs/slurm_logs/.gitkeep
 !outputs/splits/
 !outputs/splits/.gitkeep
 

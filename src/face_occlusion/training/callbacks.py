@@ -1,4 +1,4 @@
-"""Training callbacks."""
+"""Training callbacks for model selection and learning-rate logging."""
 
 from __future__ import annotations
 
@@ -11,8 +11,10 @@ from pytorch_lightning.callbacks import (
 )
 
 
-def build_callbacks(cfg) -> list:
-    ckpt_dir = Path(cfg.checkpoint.get("dirpath", "outputs/checkpoints"))
+def build_callbacks(cfg, checkpoint_dir: str | Path | None = None) -> list:
+    # Training passes checkpoint_dir so every run writes inside its experiment folder.
+    configured_dir = cfg.checkpoint.get("dirpath", None)
+    ckpt_dir = Path(checkpoint_dir or configured_dir or "outputs/checkpoints")
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     checkpoint = ModelCheckpoint(
@@ -22,6 +24,7 @@ def build_callbacks(cfg) -> list:
         mode=cfg.checkpoint.mode,
         save_top_k=int(cfg.checkpoint.save_top_k),
         save_last=True,
+        # Keep checkpoint names simple: best.ckpt and last.ckpt.
         auto_insert_metric_name=False,
     )
     early_stop = EarlyStopping(

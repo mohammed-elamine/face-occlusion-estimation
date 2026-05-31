@@ -1,4 +1,4 @@
-"""Image transforms for the baseline.
+"""Image transforms shared by config-driven Face Occlusion experiments.
 
 We deliberately avoid augmentations that change face visibility
 (RandomErasing, strong blur, heavy random crops, synthetic occlusion).
@@ -35,6 +35,7 @@ def build_train_transform(cfg) -> transforms.Compose:
             ),
             transforms.RandomRotation(degrees=float(aug.rotation_degrees)),
             transforms.ToTensor(),
+            # timm backbones expect ImageNet-style normalization by default.
             transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ]
     )

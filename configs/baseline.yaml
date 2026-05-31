@@ -1,7 +1,16 @@
+# Starter config. Copy this file for future model experiments and change
+# experiment.name plus model/training settings.
 project:
   name: face-occlusion-estimation
   seed: 42
   output_dir: outputs
+
+experiment:
+  name: baseline-convnext-tiny
+  output_root: outputs/experiments
+  save_git_info: true
+  save_config: true
+  create_latest_pointer: true
 
 data:
   train_csv: data/train.csv
@@ -64,5 +73,4 @@ checkpoint:
   monitor: val/score
   mode: min
   save_top_k: 1
-  dirpath: outputs/checkpoints
   filename: best

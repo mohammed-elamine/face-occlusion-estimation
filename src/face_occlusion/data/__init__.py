@@ -1,3 +1,5 @@
+"""Public data-loading utilities."""
+
 from .datamodule import FaceOcclusionDataModule
 from .dataset import FaceOcclusionDataset
 from .splits import load_split, make_stratified_split

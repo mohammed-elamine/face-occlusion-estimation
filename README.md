@@ -134,12 +134,16 @@ The metric rewards low overall error, strong performance on highly occluded samp
 3. Run `make help` to see all available commands.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and guidelines.
+For the full project architecture and workflow reference, see
+[docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md).
 
 
-## Baseline Pipeline
+## Config-Driven Pipeline
 
-A clean ConvNeXt-Tiny regression baseline lives under `src/face_occlusion/`
-and is driven by [`configs/baseline.yaml`](configs/baseline.yaml).
+The reusable training code lives under `src/face_occlusion/`. The current
+starter experiment is the ConvNeXt-Tiny baseline in
+[`configs/baseline.yaml`](configs/baseline.yaml), and future models should be
+added as new YAML configs.
 
 ```bash
 # 1. Sanity-check the data (paths, columns, target range, image readability).
@@ -148,14 +152,17 @@ python scripts/validate_data.py --config configs/baseline.yaml
 # 2. Create a fixed gender x occlusion-bin stratified train/val split.
 python scripts/make_split.py --config configs/baseline.yaml
 
-# 3. Train the baseline. Logs to CSV by default; set logging.use_wandb=true for W&B.
+# 3. Train a config. Each run gets its own folder under outputs/experiments/.
 python scripts/train.py --config configs/baseline.yaml
 
 # 4. Generate test predictions / submission file from the best checkpoint.
 python scripts/predict_test.py \
   --config configs/baseline.yaml \
-  --checkpoint outputs/checkpoints/best.ckpt
+  --checkpoint outputs/experiments/<run_id>/checkpoints/best.ckpt
 ```
+
+When the checkpoint comes from an experiment folder, test predictions are saved
+back into that same run's `predictions/` directory.
 
 Design choices worth knowing:
 
@@ -171,9 +178,68 @@ Design choices worth knowing:
   `(Err_F + Err_M)/2 + |Err_F - Err_M|`, so we keep `gender` in every batch
   and stratify the validation split on `gender x occlusion_bin`.
 
-Validation predictions are written to `outputs/predictions/val_predictions.csv`
-for error analysis (per-sample target, raw and clipped predictions, absolute
-error, gender, path).
+Validation predictions are written to
+`outputs/experiments/<run_id>/predictions/val_predictions.csv` for error
+analysis (per-sample target, raw and clipped predictions, absolute error,
+gender, path).
+
+
+## Experiment Outputs
+
+Training is organized as:
+
+```text
+one run = one self-contained folder
+```
+
+At startup, `scripts/train.py` creates a unique directory such as:
+
+```text
+outputs/experiments/2026-05-29_031500_baseline-convnext-tiny/
+```
+
+Important artifacts live inside that folder:
+
+```text
+config.yaml
+metadata.json
+git_commit.txt
+git_status.txt
+checkpoints/best.ckpt
+checkpoints/last.ckpt
+logs/
+predictions/val_predictions.csv
+reports/
+splits/
+```
+
+The validation CSV is the main file to copy locally for post-analysis because
+it contains the metadata needed by the challenge metric: `image_id`, `path`,
+`gender`, `target`, raw predictions, clipped predictions and absolute error.
+
+
+## Cluster Training
+
+Set up the environment once from the repository root:
+
+```bash
+bash scripts/setup_cluster_env.sh
+```
+
+Launch the baseline config:
+
+```bash
+sbatch jobs/train.slurm
+```
+
+Launch a custom config:
+
+```bash
+CONFIG_PATH=configs/convnext_small.yaml sbatch jobs/train.slurm
+```
+
+Slurm logs are saved under `outputs/slurm_logs/`. Experiment directories are
+created and managed by `scripts/train.py`, not by the Slurm script.
 
 
 ## Project Map
@@ -185,6 +251,7 @@ face-occlusion-estimation/
 │   ├── illustrations/      # Public-domain cartoon and meme fuel
 │   └── logos/              # Challenge logos
 ├── data/                   # Local data folder, not tracked
+├── docs/                   # Detailed project guide
 ├── scripts/                # Dev utility scripts
 ├── src/face_occlusion/     # Main Python package
 ├── Makefile                # Local dev commands (make help)

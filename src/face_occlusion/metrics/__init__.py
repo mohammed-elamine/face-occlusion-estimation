@@ -1,3 +1,5 @@
+"""Public metric helpers."""
+
 from .challenge_metric import (
     challenge_score,
     error_by_occlusion_bin,

@@ -21,7 +21,7 @@ def _normalize_target_scale(values: pd.Series, scale: str) -> pd.Series:
         return values
     if scale == "percent":
         return values / 100.0
-    # auto
+    # auto: challenge labels may be stored either as [0, 1] or percentages.
     if values.max() > 1.5:
         return values / 100.0
     return values
@@ -66,13 +66,15 @@ class FaceOcclusionDataset(Dataset):
         try:
             with Image.open(path) as img:
                 image = img.convert("RGB")
-        except Exception as exc:  # do not silently drop
+        except Exception as exc:
+            # Failing fast keeps bad image paths visible during validation/training.
             raise RuntimeError(f"Failed to load image '{path}': {exc}") from exc
 
         if self.transform is not None:
             image = self.transform(image)
 
         gender_raw = row[self.gender_col] if self.gender_col in row else float("nan")
+        # Keep metadata in the batch so metrics and error analysis can group predictions.
         item: dict[str, Any] = {
             "image": image,
             "gender": torch.tensor(float(gender_raw), dtype=torch.float32),

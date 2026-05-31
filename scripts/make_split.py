@@ -19,6 +19,7 @@ def main() -> None:
     cfg = load_config(args.config)
     seed_everything(int(cfg.project.seed))
 
+    # This global split can be reused by many configs for fair comparison.
     df = pd.read_csv(cfg.data.train_csv)
     split = make_stratified_split(
         df,

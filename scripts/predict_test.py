@@ -15,10 +15,26 @@ from face_occlusion.training import FaceOcclusionLitModule
 from face_occlusion.utils import load_config, seed_everything
 
 
+def _default_output_dir(cfg, checkpoint: str | Path) -> Path:
+    ckpt_path = Path(checkpoint)
+    # Experiment checkpoints live in <run_dir>/checkpoints; keep predictions beside them.
+    if ckpt_path.parent.name == "checkpoints" and ckpt_path.parent.parent.name != "outputs":
+        return ckpt_path.parent.parent / "predictions"
+    return Path(cfg.project.output_dir) / "predictions"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint", required=True)
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help=(
+            "Optional prediction output directory. Defaults to the checkpoint run "
+            "folder when possible."
+        ),
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -32,14 +48,16 @@ def main() -> None:
     module = FaceOcclusionLitModule.load_from_checkpoint(args.checkpoint, cfg=cfg)
     df = predict_dataframe(module.model, loader, device=device)
 
-    out_dir = Path(cfg.project.output_dir) / "predictions"
+    out_dir = (
+        Path(args.output_dir) if args.output_dir else _default_output_dir(cfg, args.checkpoint)
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Extended file for analysis.
+    # Extended file keeps metadata and raw predictions for analysis.
     ext_path = out_dir / "test_predictions_extended.csv"
     df.to_csv(ext_path, index=False)
 
-    # Submission file: mirror train.csv columns -> filename, FaceOcclusion, gender.
+    # Submission file mirrors the challenge columns: filename, prediction, gender.
     submission = pd.DataFrame(
         {
             cfg.data.image_col: df["image_id"],

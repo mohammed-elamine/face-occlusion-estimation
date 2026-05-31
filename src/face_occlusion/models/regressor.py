@@ -1,4 +1,4 @@
-"""timm-backed regressor for the Face Occlusion baseline."""
+"""timm-backed regressor used by Face Occlusion model configs."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ class OcclusionRegressor(nn.Module):
         self.backbone = timm.create_model(
             backbone,
             pretrained=pretrained,
+            # num_classes=1 replaces the classifier with a scalar regression head.
             num_classes=1,
             drop_rate=float(dropout),
         )

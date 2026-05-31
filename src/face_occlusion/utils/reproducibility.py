@@ -8,6 +8,8 @@ import torch
 
 
 def seed_everything(seed: int) -> None:
+    """Seed Python, NumPy and PyTorch before data loading or model creation."""
+
     os.environ["PYTHONHASHSEED"] = str(seed)
     random.seed(seed)
     np.random.seed(seed)
