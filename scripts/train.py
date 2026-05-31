@@ -9,6 +9,10 @@ import shutil
 import warnings
 from pathlib import Path
 
+try:
+    import _bootstrap  # noqa: F401
+except ModuleNotFoundError:
+    from scripts import _bootstrap  # noqa: F401
 import numpy as np
 import pandas as pd
 import pytorch_lightning as pl
@@ -107,12 +111,17 @@ def _save_val_predictions(module: FaceOcclusionLitModule, out_dir: Path) -> Path
     df = pd.DataFrame(
         {
             "image_id": out["image_ids"],
+            "filename": out["filenames"],
             "path": out["paths"],
             "gender": out["genders"],
             "target": targets,
             "pred_raw": preds,
             "pred_clipped": clipped,
             "abs_error": np.abs(clipped - targets),
+            "database": out["databases"],
+            "source_subfolder": out["source_subfolders"],
+            "group_id": out["group_ids"],
+            "face_id": out["face_ids"],
         }
     )
     out_dir.mkdir(parents=True, exist_ok=True)

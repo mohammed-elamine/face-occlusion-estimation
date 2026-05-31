@@ -6,6 +6,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+try:
+    import _bootstrap  # noqa: F401
+except ModuleNotFoundError:
+    from scripts import _bootstrap  # noqa: F401
 import pandas as pd
 import torch
 
@@ -21,6 +25,19 @@ def _default_output_dir(cfg, checkpoint: str | Path) -> Path:
     if ckpt_path.parent.name == "checkpoints" and ckpt_path.parent.parent.name != "outputs":
         return ckpt_path.parent.parent / "predictions"
     return Path(cfg.project.output_dir) / "predictions"
+
+
+def build_submission(df: pd.DataFrame, cfg) -> pd.DataFrame:
+    """Build the challenge submission with a dummy gender column required by the platform."""
+
+    dummy_gender = cfg.data.get("submission_dummy_gender", cfg.data.get("female_value", 0))
+    return pd.DataFrame(
+        {
+            cfg.data.image_col: df["filename"],
+            cfg.data.target_col: df["pred_clipped"],
+            cfg.data.gender_col: dummy_gender,
+        }
+    )
 
 
 def main() -> None:
@@ -57,14 +74,8 @@ def main() -> None:
     ext_path = out_dir / "test_predictions_extended.csv"
     df.to_csv(ext_path, index=False)
 
-    # Submission file mirrors the challenge columns: filename, prediction, gender.
-    submission = pd.DataFrame(
-        {
-            cfg.data.image_col: df["image_id"],
-            cfg.data.target_col: df["pred_clipped"],
-            cfg.data.gender_col: df["gender"],
-        }
-    )
+    # Submission file mirrors the challenge columns: filename, prediction, dummy gender.
+    submission = build_submission(df, cfg)
     sub_path = out_dir / "test_predictions.csv"
     submission.to_csv(sub_path, index=False)
 

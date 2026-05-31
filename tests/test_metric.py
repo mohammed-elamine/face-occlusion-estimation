@@ -1,6 +1,7 @@
 """Tests for the challenge metric helpers."""
 
 import numpy as np
+import pytest
 
 from face_occlusion.metrics.challenge_metric import (
     challenge_score,
@@ -33,7 +34,7 @@ def test_weighted_mse_clips():
 def test_challenge_score_balanced_groups():
     y = np.array([0.1, 0.5, 0.9, 0.2])
     p = np.array([0.1, 0.5, 0.9, 0.2])
-    genders = np.array(["1.0", "1.0", "0.0", "0.0"])
+    genders = np.array(["0.0", "0.0", "1.0", "1.0"])
     result = challenge_score(p, y, genders)
     assert result["score"] == 0.0
     assert result["err_female"] == 0.0
@@ -45,9 +46,19 @@ def test_challenge_score_missing_group_falls_back():
     y = np.array([0.1, 0.5])
     p = np.array([0.1, 0.5])
     genders = np.array(["1.0", "1.0"])
-    result = challenge_score(p, y, genders)
-    assert np.isnan(result["err_male"])
+    with pytest.warns(RuntimeWarning, match="missing one gender subgroup"):
+        result = challenge_score(p, y, genders)
+    assert np.isnan(result["err_female"])
     assert result["score"] == 0.0
+
+
+def test_challenge_score_uses_female_zero_male_one_by_default():
+    y = np.array([1.0, 1.0, 0.5, 0.5])
+    p = np.array([0.0, 0.0, 0.5, 0.5])
+    genders = np.array([0.0, 0.0, 1.0, 1.0])
+    result = challenge_score(p, y, genders)
+    assert result["err_female"] > 0.0
+    assert result["err_male"] == 0.0
 
 
 def test_by_group():

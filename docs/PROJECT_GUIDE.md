@@ -19,16 +19,16 @@ the challenge metric is gender-aware, the pipeline keeps `gender`, `image_id`,
 ## Baseline vs Future Models
 
 `configs/baseline.yaml` is the starter experiment configuration. It currently
-uses a ConvNeXt-Tiny backbone.
+uses a ConvNeXt-Small backbone for leaderboard-oriented experiments.
 
 The code under `src/face_occlusion/` is a reusable project package for all
 future configs. New experiments should usually be added
 by creating a new YAML file in `configs/`, for example:
 
 ```text
-configs/convnext_small.yaml
 configs/efficientnet_b3.yaml
 configs/dinov2_vitl14.yaml
+configs/convnext_base.yaml
 ```
 
 The same scripts should continue to work:
@@ -149,29 +149,38 @@ data:
   id_col: filename
 ```
 
+Gender is encoded as:
+
+```text
+female = 0
+male = 1
+```
+
 `FaceOcclusionDataset` returns dictionaries, not just image tensors. Each
 validation item includes:
 
 ```text
-image, target, gender, image_id, path
+image, target, gender, image_id, filename, path, database, source_subfolder, group_id, face_id
 ```
 
 This is intentional. The challenge score depends on gender groups, and
-post-analysis needs image ids and paths.
+post-analysis needs image ids, paths and source metadata.
 
 ## Split Logic
 
-The validation split is stratified by:
+The default validation split is row-level and stratified by:
 
 ```text
-gender x occlusion_bin
+gender x occlusion_bin x database
 ```
 
 This keeps the validation set representative across both gender and occlusion
-difficulty. The split file stores only ids and split labels:
+difficulty while also preserving the hidden database/source distribution.
+
+The split file stores ids, split labels and diagnostic metadata:
 
 ```text
-filename, split
+filename, split, database, source_subfolder, group_id, face_id, occlusion_bin, gender
 ```
 
 The project saves the split first, then reloads it when building
@@ -184,14 +193,51 @@ This makes validation scores comparable across configs. A baseline, ConvNeXt
 Small and EfficientNet experiment can all use the exact same validation images
 instead of silently creating different random splits.
 
+Two split strategies are supported:
+
+```text
+row_stratified   # default, leaderboard-oriented comparison
+group_stratified # robustness check with no group_id overlap between train and val
+```
+
+`group_stratified` uses the `database3` `m.<id>` folder as an identity-like
+group. For `database1` and `database2`, where no reliable identity key is
+exposed, the filename is used as the conservative fallback group.
+
+The default baseline uses `row_stratified` because database3 dominates the test
+set and most database3 test identities are already seen in the challenge
+training data. `group_stratified` is intentionally optional: use it for
+robustness checks, not as an automatic second training run for every model.
+
 By default it is written to:
 
 ```text
-outputs/splits/baseline_split.csv
+outputs/splits/canonical_row_split.csv
 ```
 
 Training copies the exact split file into the experiment folder so results stay
 reproducible even if the global split file changes later.
+
+To generate a group-level robustness split without changing the baseline split:
+
+```bash
+python scripts/make_split.py \
+  --config configs/baseline.yaml \
+  --strategy group_stratified \
+  --split-path outputs/splits/group_robustness_split.csv
+```
+
+For group-level training, copy the model config and set:
+
+```yaml
+split:
+  strategy: group_stratified
+  split_path: outputs/splits/group_robustness_split.csv
+```
+
+The selected final model can later be retrained on all labeled data as a
+separate finalization step. That is intentionally not the default validation
+workflow.
 
 ## Training Lifecycle
 
@@ -210,7 +256,7 @@ outputs/experiments/<run_id>/
 The run id is generated from a timestamp and `experiment.name`, for example:
 
 ```text
-2026-05-29_031500_baseline-convnext-tiny
+2026-05-29_031500_baseline-convnext-small
 ```
 
 The training script then:
@@ -245,7 +291,7 @@ outputs/experiments/<run_id>/
 |   `-- val_predictions.csv
 |-- reports/
 `-- splits/
-    `-- baseline_split.csv
+    `-- canonical_row_split.csv
 ```
 
 The most important local analysis artifact is:
@@ -257,10 +303,33 @@ outputs/experiments/<run_id>/predictions/val_predictions.csv
 It contains:
 
 ```text
-image_id,path,gender,target,pred_raw,pred_clipped,abs_error
+image_id,filename,path,gender,target,pred_raw,pred_clipped,abs_error,database,source_subfolder,group_id,face_id
 ```
 
 Use this CSV for error analysis without loading a checkpoint.
+
+For a lightweight post-analysis report:
+
+```bash
+python scripts/analyze_val_predictions.py \
+  --experiment-dir outputs/experiments/<run_id>
+```
+
+The explicit path mode is still supported:
+
+```bash
+python scripts/analyze_val_predictions.py \
+  --predictions outputs/experiments/<run_id>/predictions/val_predictions.csv \
+  --output-dir outputs/experiments/<run_id>/reports
+```
+
+The analyzer writes summary metrics, grouped metrics, worst-error tables and
+plots. It reports metrics by gender, occlusion bin, database, database x
+occlusion bin, gender x occlusion bin and database x gender. If the run folder
+contains one split snapshot under `splits/`, or if you pass `--split-csv`, it
+also writes metrics by seen/unseen validation group. Use
+`--save-image-grids --image-root data` to add small qualitative grids of the
+largest errors.
 
 ## Metric Logic
 
@@ -309,6 +378,10 @@ Files produced:
 test_predictions.csv           # Submission-style file
 test_predictions_extended.csv  # Metadata-rich file for analysis
 ```
+
+`test_students.csv` contains only `filename`, so test prediction does not assume
+real test gender or target values. The submission writer adds a dummy `gender`
+column because the challenge upload format requires it.
 
 ## Cluster Workflow
 
@@ -371,6 +444,9 @@ Data utilities:
 ```bash
 python scripts/validate_data.py --config configs/baseline.yaml
 python scripts/make_split.py --config configs/baseline.yaml
+python scripts/make_split.py --config configs/baseline.yaml \
+  --strategy group_stratified \
+  --split-path outputs/splits/group_robustness_split.csv
 ```
 
 ## Git and Artifact Policy

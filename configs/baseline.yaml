@@ -6,7 +6,7 @@ project:
   output_dir: outputs
 
 experiment:
-  name: baseline-convnext-tiny
+  name: baseline-convnext-small
   output_root: outputs/experiments
   save_git_info: true
   save_config: true
@@ -20,21 +20,25 @@ data:
   target_col: FaceOcclusion
   gender_col: gender
   id_col: filename            # no explicit id, use filename as unique id
-  # Genders are encoded as floats in the CSV. Female samples tend to have
-  # higher occlusion (hair covering the face), which matches gender=1.0.
-  female_value: 1.0
-  male_value: 0.0
+  # Dataset gender encoding: female=0, male=1.
+  female_value: 0.0
+  male_value: 1.0
+  submission_dummy_gender: 0
   target_scale: auto          # auto | unit | percent
   val_size: 0.2
   num_workers: 4
 
 split:
-  strategy: gender_occlusion_stratified
+  strategy: row_stratified     # row_stratified | group_stratified
   occlusion_bins: [0.0, 0.05, 0.10, 0.20, 0.40, 0.60, 1.0]
-  split_path: outputs/splits/baseline_split.csv
+  split_path: outputs/splits/canonical_row_split.csv
+  val_size: 0.2
+  random_state: 42
+  stratify_by: [gender, occlusion_bin, database]
+  group_col: group_id
 
 model:
-  backbone: convnext_tiny.fb_in22k_ft_in1k
+  backbone: convnext_small.fb_in22k_ft_in1k
   pretrained: true
   output_activation: identity   # identity | sigmoid
   dropout: 0.0
@@ -63,7 +67,7 @@ augmentation:
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
-  run_name: baseline-convnext-tiny
+  run_name: baseline-convnext-small
   log_images: true
   log_prediction_plots: true
   log_images_every_n_epochs: 1

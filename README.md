@@ -141,7 +141,7 @@ For the full project architecture and workflow reference, see
 ## Config-Driven Pipeline
 
 The reusable training code lives under `src/face_occlusion/`. The current
-starter experiment is the ConvNeXt-Tiny baseline in
+starter experiment is the ConvNeXt-Small baseline in
 [`configs/baseline.yaml`](configs/baseline.yaml), and future models should be
 added as new YAML configs.
 
@@ -149,7 +149,10 @@ added as new YAML configs.
 # 1. Sanity-check the data (paths, columns, target range, image readability).
 python scripts/validate_data.py --config configs/baseline.yaml
 
-# 2. Create a fixed gender x occlusion-bin stratified train/val split.
+# Optional guided notebook:
+# notebooks/database3_identity_overlap.ipynb
+
+# 2. Create a fixed row-level gender x occlusion-bin x database split.
 python scripts/make_split.py --config configs/baseline.yaml
 
 # 3. Train a config. Each run gets its own folder under outputs/experiments/.
@@ -166,9 +169,10 @@ back into that same run's `predictions/` directory.
 
 Design choices worth knowing:
 
-- **Backbone — `convnext_tiny.fb_in22k_ft_in1k`.** Strong ImageNet-22k features
-  with a small enough footprint to iterate quickly on a single GPU. Easy to
-  swap with any `timm` model via `model.backbone` in the config.
+- **Backbone — `convnext_small.fb_in22k_ft_in1k`.** Strong ImageNet-22k features
+  with more capacity than Tiny for leaderboard-oriented experiments, while still
+  being practical on a single GPU. Easy to swap with any `timm` model via
+  `model.backbone` in the config.
 - **Augmentation is conservative.** We avoid RandomErasing, heavy blur,
   random crops and synthetic occlusion: they change the *true* face
   visibility while the original label stays the same, which silently
@@ -176,12 +180,49 @@ Design choices worth knowing:
   small rotation are used.
 - **Metric is gender-aware.** Validation reports the official score
   `(Err_F + Err_M)/2 + |Err_F - Err_M|`, so we keep `gender` in every batch
-  and stratify the validation split on `gender x occlusion_bin`.
+  and stratify the default validation split on `gender x occlusion_bin x database`.
+  Dataset encoding is `female=0`, `male=1`.
+- **Path metadata is preserved.** `database`, `source_subfolder`, `group_id`
+  and `face_id` are parsed from filenames for splits and diagnostics, not fed
+  into the image model.
+- **Two split protocols are supported.** `row_stratified` is the default for
+  leaderboard-oriented comparison; `group_stratified` is available for a
+  stricter robustness check with unseen `group_id` values. We do not train
+  every model twice by default.
+- **Database3 identity overlap can be inspected directly.** Open
+  `notebooks/database3_identity_overlap.ipynb` to quantify how many
+  `database3` `m.<id>` folders appear in both challenge train and test,
+  with tables and visuals.
 
 Validation predictions are written to
 `outputs/experiments/<run_id>/predictions/val_predictions.csv` for error
 analysis (per-sample target, raw and clipped predictions, absolute error,
-gender, path).
+gender, path and parsed path metadata).
+
+Analyze a completed experiment folder with:
+
+```bash
+python scripts/analyze_val_predictions.py \
+  --experiment-dir outputs/experiments/<run_id>
+```
+
+The analysis writes summary metrics, grouped metrics, worst-error tables and
+diagnostic plots under `outputs/experiments/<run_id>/reports/`. Add
+`--save-image-grids --image-root data` for small qualitative grids of the worst
+examples.
+
+For a group-level robustness split, generate a separate split file and use a
+config that points to it:
+
+```bash
+python scripts/make_split.py \
+  --config configs/baseline.yaml \
+  --strategy group_stratified \
+  --split-path outputs/splits/group_robustness_split.csv
+```
+
+Then copy the model config and set `split.strategy: group_stratified` plus
+`split.split_path: outputs/splits/group_robustness_split.csv` before training.
 
 
 ## Experiment Outputs
@@ -195,7 +236,7 @@ one run = one self-contained folder
 At startup, `scripts/train.py` creates a unique directory such as:
 
 ```text
-outputs/experiments/2026-05-29_031500_baseline-convnext-tiny/
+outputs/experiments/2026-05-29_031500_baseline-convnext-small/
 ```
 
 Important artifacts live inside that folder:
@@ -235,7 +276,7 @@ sbatch jobs/train.slurm
 Launch a custom config:
 
 ```bash
-CONFIG_PATH=configs/convnext_small.yaml sbatch jobs/train.slurm
+CONFIG_PATH=configs/efficientnet_b3.yaml sbatch jobs/train.slurm
 ```
 
 Slurm logs are saved under `outputs/slurm_logs/`. Experiment directories are

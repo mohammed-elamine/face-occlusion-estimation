@@ -8,6 +8,7 @@ Predictions are clipped to [0, 1] for validation metrics and submission.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 
 import numpy as np
@@ -56,8 +57,8 @@ def challenge_score(
     preds,
     targets,
     genders,
-    female_value="1.0",
-    male_value="0.0",
+    female_value="0.0",
+    male_value="1.0",
     clip: bool = True,
 ) -> dict[str, float]:
     p = _to_np(preds).reshape(-1)
@@ -75,6 +76,11 @@ def challenge_score(
 
     if np.isnan(err_f) or np.isnan(err_m):
         # If one subgroup is missing the score is ill-defined; fall back to overall WMSE.
+        warnings.warn(
+            "Challenge score is missing one gender subgroup; falling back to overall weighted MSE.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         overall = weighted_mse(p, t, clip=clip)
         return {
             "score": overall,
