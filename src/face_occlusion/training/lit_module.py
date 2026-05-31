@@ -13,6 +13,7 @@ from torch.optim.lr_scheduler import CosineAnnealingLR
 from ..metrics.challenge_metric import (
     challenge_score,
     error_by_occlusion_bin,
+    weighted_mse,
 )
 from ..models import build_model
 
@@ -31,8 +32,8 @@ class FaceOcclusionLitModule(pl.LightningModule):
         self.model = build_model(cfg, mean_target=mean_target)
         # Validation metrics need the whole epoch because the score is grouped by gender.
         self._val_buffer: list[dict[str, Any]] = []
-        self._female_value = str(cfg.data.get("female_value", "1.0"))
-        self._male_value = str(cfg.data.get("male_value", "0.0"))
+        self._female_value = str(cfg.data.get("female_value", "0.0"))
+        self._male_value = str(cfg.data.get("male_value", "1.0"))
 
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -84,7 +85,12 @@ class FaceOcclusionLitModule(pl.LightningModule):
                 "targets": targets.detach().cpu(),
                 "genders": batch["gender"].detach().cpu(),
                 "image_ids": list(batch["image_id"]),
+                "filenames": list(batch["filename"]),
                 "paths": list(batch["path"]),
+                "databases": list(batch["database"]),
+                "source_subfolders": list(batch["source_subfolder"]),
+                "group_ids": list(batch["group_id"]),
+                "face_ids": batch["face_id"].detach().cpu(),
             }
         )
 
@@ -125,25 +131,43 @@ class FaceOcclusionLitModule(pl.LightningModule):
                 batch_size=num_val,
             )
 
+        databases = np.array(sum([b["databases"] for b in self._val_buffer], []))
+        for database in sorted(np.unique(databases)):
+            mask = databases == database
+            db_err = weighted_mse(preds[mask], targets[mask], clip=True)
+            self.log(f"val/database/{database}_err", db_err, batch_size=int(mask.sum()))
+
         # train.py reads this after trainer.validate() to write val_predictions.csv.
         self._last_val_outputs = {
             "preds": preds,
             "targets": targets,
             "genders": gender_str,
             "image_ids": sum([b["image_ids"] for b in self._val_buffer], []),
+            "filenames": sum([b["filenames"] for b in self._val_buffer], []),
             "paths": sum([b["paths"] for b in self._val_buffer], []),
+            "databases": databases.tolist(),
+            "source_subfolders": sum([b["source_subfolders"] for b in self._val_buffer], []),
+            "group_ids": sum([b["group_ids"] for b in self._val_buffer], []),
+            "face_ids": torch.cat([b["face_ids"] for b in self._val_buffer]).numpy(),
         }
         self._val_buffer.clear()
 
     # ------------------------------------------------------------------
     def predict_step(self, batch, batch_idx, dataloader_idx: int = 0):
         preds = self(batch["image"])
-        return {
+        out = {
             "preds": preds.detach().cpu(),
-            "genders": batch["gender"].detach().cpu(),
             "image_ids": list(batch["image_id"]),
+            "filenames": list(batch["filename"]),
             "paths": list(batch["path"]),
+            "databases": list(batch["database"]),
+            "source_subfolders": list(batch["source_subfolder"]),
+            "group_ids": list(batch["group_id"]),
+            "face_ids": batch["face_id"].detach().cpu(),
         }
+        if "gender" in batch:
+            out["genders"] = batch["gender"].detach().cpu()
+        return out
 
     # ------------------------------------------------------------------
     def configure_optimizers(self):

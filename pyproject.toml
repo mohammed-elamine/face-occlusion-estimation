@@ -50,3 +50,9 @@ select = ["E", "F", "I", "W", "UP"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["face_occlusion"]
+
+# -- Pytest ----------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]

@@ -54,7 +54,7 @@ bash scripts/setup_cluster_env.sh
 python scripts/validate_data.py --config configs/baseline.yaml
 python scripts/make_split.py --config configs/baseline.yaml
 sbatch jobs/train.slurm
-CONFIG_PATH=configs/convnext_small.yaml sbatch jobs/train.slurm
+CONFIG_PATH=configs/efficientnet_b3.yaml sbatch jobs/train.slurm
 ```
 
 After training, copy the full run folder or at least:

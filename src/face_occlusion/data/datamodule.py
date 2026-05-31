@@ -10,6 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .dataset import FaceOcclusionDataset
+from .metadata import add_path_metadata
 from .splits import load_split, make_stratified_split, save_split
 from .transforms import build_eval_transform, build_train_transform
 
@@ -38,8 +39,11 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
             gender_col=cfg.data.gender_col,
             id_col=cfg.data.id_col,
             bins=cfg.split.occlusion_bins,
-            val_size=float(cfg.data.val_size),
-            seed=int(cfg.project.seed),
+            val_size=float(cfg.split.get("val_size", cfg.data.val_size)),
+            seed=int(cfg.split.get("random_state", cfg.project.seed)),
+            strategy=cfg.split.get("strategy", "row_stratified"),
+            stratify_by=list(cfg.split.get("stratify_by", ["gender", "occlusion_bin"])),
+            group_col=cfg.split.get("group_col", "group_id"),
         )
         save_split(split, split_path)
         print(f"[datamodule] Wrote split to {split_path}")
@@ -51,8 +55,8 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
         eval_tf = build_eval_transform(cfg)
 
         if stage in (None, "fit", "validate"):
-            df = pd.read_csv(cfg.data.train_csv)
-            split = load_split(cfg.split.split_path)
+            df = add_path_metadata(pd.read_csv(cfg.data.train_csv), filename_col=cfg.data.id_col)
+            split = load_split(cfg.split.split_path)[[cfg.data.id_col, "split"]]
             # The split stores ids only; metadata is reloaded from train.csv for each run.
             merged = df.merge(split, on=cfg.data.id_col, how="inner")
             if len(merged) != len(df):
@@ -77,12 +81,9 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
             self.val_ds = FaceOcclusionDataset(val_df, transform=eval_tf, mode="val", **common)
 
         if stage in (None, "test", "predict"):
-            test_df = pd.read_csv(cfg.data.test_csv)
-            # Some challenge test files include gender for fairness-aware submission.
-            gender_col = (
-                cfg.data.gender_col
-                if cfg.data.gender_col in test_df.columns
-                else cfg.data.image_col
+            test_df = add_path_metadata(
+                pd.read_csv(cfg.data.test_csv),
+                filename_col=cfg.data.id_col,
             )
             self.test_ds = FaceOcclusionDataset(
                 test_df,
@@ -91,7 +92,7 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
                 mode="test",
                 image_col=cfg.data.image_col,
                 target_col=cfg.data.target_col,
-                gender_col=gender_col,
+                gender_col=cfg.data.gender_col,
                 id_col=cfg.data.id_col,
                 target_scale=cfg.data.target_scale,
             )

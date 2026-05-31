@@ -12,7 +12,7 @@ import torch.nn as nn
 class OcclusionRegressor(nn.Module):
     def __init__(
         self,
-        backbone: str = "convnext_tiny.fb_in22k_ft_in1k",
+        backbone: str = "convnext_small.fb_in22k_ft_in1k",
         pretrained: bool = True,
         output_activation: str = "identity",
         dropout: float = 0.0,

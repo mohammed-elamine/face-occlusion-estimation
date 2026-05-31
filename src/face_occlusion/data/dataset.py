@@ -15,6 +15,8 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
+from .metadata import add_path_metadata
+
 
 def _normalize_target_scale(values: pd.Series, scale: str) -> pd.Series:
     if scale == "unit":
@@ -49,10 +51,12 @@ class FaceOcclusionDataset(Dataset):
         self.gender_col = gender_col
         self.id_col = id_col or image_col
 
-        df = metadata.reset_index(drop=True).copy()
+        df = add_path_metadata(metadata.reset_index(drop=True), filename_col=image_col)
         if mode != "test":
             if target_col not in df.columns:
                 raise ValueError(f"Target column '{target_col}' missing in metadata.")
+            if gender_col not in df.columns:
+                raise ValueError(f"Gender column '{gender_col}' missing in metadata.")
             df[target_col] = _normalize_target_scale(df[target_col].astype(float), target_scale)
         self.df = df
 
@@ -73,14 +77,18 @@ class FaceOcclusionDataset(Dataset):
         if self.transform is not None:
             image = self.transform(image)
 
-        gender_raw = row[self.gender_col] if self.gender_col in row else float("nan")
         # Keep metadata in the batch so metrics and error analysis can group predictions.
         item: dict[str, Any] = {
             "image": image,
-            "gender": torch.tensor(float(gender_raw), dtype=torch.float32),
             "image_id": str(row[self.id_col]),
             "path": str(path),
+            "filename": rel_path,
+            "database": str(row["database"]),
+            "source_subfolder": str(row["source_subfolder"]),
+            "group_id": str(row["group_id"]),
+            "face_id": int(row["face_id"]),
         }
         if self.mode != "test":
+            item["gender"] = torch.tensor(float(row[self.gender_col]), dtype=torch.float32)
             item["target"] = torch.tensor(float(row[self.target_col]), dtype=torch.float32)
         return item
