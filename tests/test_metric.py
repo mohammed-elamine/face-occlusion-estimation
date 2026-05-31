@@ -1,3 +1,5 @@
+"""Tests for the challenge metric helpers."""
+
 import numpy as np
 
 from face_occlusion.metrics.challenge_metric import (

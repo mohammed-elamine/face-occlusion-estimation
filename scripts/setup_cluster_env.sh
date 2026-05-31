@@ -1,15 +1,10 @@
 #!/bin/bash
-"""
-Prepare the cluster environment before launching Slurm jobs.
-
-Run this script from the repository root after pulling a new version of the code.
-It loads the required cluster modules, creates or updates the local `.venv`
-environment using `uv`, installs dependencies from `pyproject.toml` and `uv.lock`,
-and performs a few quick sanity checks.
-
-Usage:
-    bash scripts/setup_cluster_env.sh
-"""
+# Prepare the cluster environment before launching Slurm jobs.
+#
+# Run this script from the repository root after pulling a new version of the code.
+# It loads the required cluster modules, creates or updates the local `.venv`
+# environment using `uv`, installs dependencies from `pyproject.toml` and `uv.lock`,
+# and performs a few quick sanity checks.
 
 set -e
 
@@ -32,11 +27,15 @@ hash -r
 export LD_LIBRARY_PATH="/projects/share/apps/miniconda3/25.5.1/lib:${LD_LIBRARY_PATH:-}"
 
 echo "Syncing Python environment with uv..."
+# Use the lock file and Python 3.11 to match the cluster module stack.
 uv sync --frozen --extra wandb --python python3.11
 
 source .venv/bin/activate
 
 echo "Running sanity checks..."
+
+python -c "import bz2; print('bz2 OK')"
+python -c "import torchvision; print('torchvision OK')"
 
 python - <<'PY'
 import sys
@@ -54,8 +53,8 @@ else:
     print("Note: CUDA may be unavailable on the login node. It should be checked again inside the Slurm job.")
 PY
 
-mkdir -p outputs/logs outputs/checkpoints outputs/predictions outputs/reports outputs/splits
+mkdir -p outputs/experiments outputs/slurm_logs outputs/splits outputs/reports
 
 echo "Environment setup completed successfully."
 echo "You can now submit the training job with:"
-echo "  sbatch jobs/train_baseline.slurm"
+echo "  sbatch jobs/train.slurm"

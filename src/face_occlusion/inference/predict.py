@@ -1,4 +1,4 @@
-"""Inference utilities."""
+"""Inference helpers that keep predictions tied to image metadata."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ def predict_dataframe(model, loader: DataLoader, device: str = "cpu") -> pd.Data
         genders = batch["gender"].detach().cpu().numpy().reshape(-1)
         image_ids = list(batch["image_id"])
         paths = list(batch["path"])
+        # One output row per image keeps predictions easy to join with metadata later.
         for i, pid in enumerate(image_ids):
             rows.append(
                 {

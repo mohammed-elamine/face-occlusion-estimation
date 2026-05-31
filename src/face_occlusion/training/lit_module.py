@@ -1,4 +1,4 @@
-"""Lightning module for the Face Occlusion baseline."""
+"""Lightning module for Face Occlusion regression experiments."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ class FaceOcclusionLitModule(pl.LightningModule):
         self.save_hyperparameters(dict(cfg), ignore=[])
         self.cfg = cfg
         self.model = build_model(cfg, mean_target=mean_target)
+        # Validation metrics need the whole epoch because the score is grouped by gender.
         self._val_buffer: list[dict[str, Any]] = []
         self._female_value = str(cfg.data.get("female_value", "1.0"))
         self._male_value = str(cfg.data.get("male_value", "0.0"))
@@ -40,20 +41,43 @@ class FaceOcclusionLitModule(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         preds = self(batch["image"])
         targets = batch["target"]
+        batch_size = int(targets.shape[0])
         loss = weighted_mse_loss(preds, targets)
-        self.log("train/loss", loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log(
+            "train/loss",
+            loss,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
         opt = self.optimizers()
         if isinstance(opt, list):
             opt = opt[0]
         if opt is not None:
-            self.log("train/lr", opt.param_groups[0]["lr"], on_step=False, on_epoch=True)
+            self.log(
+                "train/lr",
+                opt.param_groups[0]["lr"],
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
         return loss
 
     def validation_step(self, batch, batch_idx):
         preds = self(batch["image"])
         targets = batch["target"]
+        batch_size = int(targets.shape[0])
+        # The challenge metric clips predictions, so validation loss follows that convention.
         loss = weighted_mse_loss(preds.clamp(0.0, 1.0), targets)
-        self.log("val/loss", loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log(
+            "val/loss",
+            loss,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+            batch_size=batch_size,
+        )
         self._val_buffer.append(
             {
                 "preds": preds.detach().cpu(),
@@ -71,8 +95,10 @@ class FaceOcclusionLitModule(pl.LightningModule):
         preds = torch.cat([b["preds"] for b in self._val_buffer]).numpy()
         targets = torch.cat([b["targets"] for b in self._val_buffer]).numpy()
         genders = torch.cat([b["genders"] for b in self._val_buffer]).numpy()
+        num_val = int(targets.shape[0])
         # The official score is computed per gender then combined; we keep the
         # raw predictions for analysis but report the clipped metric.
+        # Formatting keeps float gender labels consistent with config values like "1.0".
         gender_str = np.array([f"{float(g):.1f}" for g in genders])
         score = challenge_score(
             preds,
@@ -82,19 +108,24 @@ class FaceOcclusionLitModule(pl.LightningModule):
             male_value=self._male_value,
         )
         for k, v in score.items():
-            self.log(f"val/{k}", float(v), prog_bar=(k == "score"))
+            self.log(f"val/{k}", float(v), prog_bar=(k == "score"), batch_size=num_val)
 
         # Sanity stats on raw (un-clipped) predictions: useful for the identity head.
-        self.log("val/pred_min_raw", float(preds.min()))
-        self.log("val/pred_max_raw", float(preds.max()))
-        self.log("val/pct_pred_below_0", float((preds < 0).mean()))
-        self.log("val/pct_pred_above_1", float((preds > 1).mean()))
+        self.log("val/pred_min_raw", float(preds.min()), batch_size=num_val)
+        self.log("val/pred_max_raw", float(preds.max()), batch_size=num_val)
+        self.log("val/pct_pred_below_0", float((preds < 0).mean()), batch_size=num_val)
+        self.log("val/pct_pred_above_1", float((preds > 1).mean()), batch_size=num_val)
 
         bins = list(self.cfg.split.occlusion_bins)
         bin_errs = error_by_occlusion_bin(preds, targets, bins=bins)
         for name, value in bin_errs.items():
-            self.log(f"val/bin_{name}_err", float(value) if not np.isnan(value) else 0.0)
+            self.log(
+                f"val/bin_{name}_err",
+                float(value) if not np.isnan(value) else 0.0,
+                batch_size=num_val,
+            )
 
+        # train.py reads this after trainer.validate() to write val_predictions.csv.
         self._last_val_outputs = {
             "preds": preds,
             "targets": targets,

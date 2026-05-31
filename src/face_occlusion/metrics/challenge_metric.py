@@ -16,6 +16,7 @@ DEFAULT_BINS = (0.0, 0.05, 0.10, 0.20, 0.40, 0.60, 1.0)
 
 
 def _to_np(x) -> np.ndarray:
+    # Metrics accept either NumPy arrays or torch tensors from Lightning.
     try:
         import torch
 
@@ -68,6 +69,7 @@ def challenge_score(
     mask_f = g == female_value
     mask_m = g == male_value
 
+    # Compute subgroup errors separately because the final metric penalizes imbalance.
     err_f = weighted_mse(p[mask_f], t[mask_f], clip=clip) if mask_f.any() else float("nan")
     err_m = weighted_mse(p[mask_m], t[mask_m], clip=clip) if mask_m.any() else float("nan")
 
@@ -106,6 +108,7 @@ def error_by_occlusion_bin(
     out: dict[str, float] = {}
     for i in range(len(edges) - 1):
         lo, hi = float(edges[i]), float(edges[i + 1])
+        # The final bin includes its right edge so target=1.0 is not dropped.
         mask = (t >= lo) & (t < hi if i < len(edges) - 2 else t <= hi)
         if mask.sum() == 0:
             out[f"{lo:.2f}_{hi:.2f}"] = float("nan")

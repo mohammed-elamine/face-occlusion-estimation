@@ -1,88 +1,72 @@
 # Slurm Jobs
 
-This folder contains Slurm job scripts used to run the project on the school compute cluster.
+This folder contains Slurm job scripts used to run the project on the school
+compute cluster. Submit jobs from the repository root so relative paths resolve
+correctly.
 
-The goal is to keep cluster execution reproducible and easy to launch from the repository root.
-
----
+For the full project workflow, see [`../docs/PROJECT_GUIDE.md`](../docs/PROJECT_GUIDE.md).
 
 ## Contents
 
 ```text
 jobs/
-├── train_baseline.slurm     # Launch baseline model training
-├── predict_test.slurm       # Generate test predictions
-└── README.md                # This file
+|-- train.slurm     # Generic training launcher
+`-- README.md       # This file
 ```
 
----
+## Training
 
-## Usage
-
-Always submit jobs from the repository root:
+Baseline:
 
 ```bash
-cd ~/projects/face-occlusion-estimation
-sbatch jobs/train_baseline.slurm
+sbatch jobs/train.slurm
 ```
 
-To monitor your jobs:
+Custom model or config:
 
 ```bash
-squeue -u $USER
+CONFIG_PATH=configs/efficientnet_b3.yaml sbatch jobs/train.slurm
 ```
 
-To cancel a job:
+`jobs/train.slurm` only prepares the cluster runtime and launches:
 
 ```bash
-scancel <job_id>
+python scripts/train.py --config "$CONFIG_PATH"
 ```
 
-Logs are written to:
+The experiment directory is created by `scripts/train.py` under:
 
 ```text
-outputs/logs/
+outputs/experiments/<run_id>/
 ```
 
----
+Slurm stdout and stderr logs are saved under:
 
-## Security Rules
-
-These job files can be committed to GitHub as long as they do not contain secrets.
-
-Never commit:
-
-* W&B API keys,
-* GitHub tokens,
-* passwords,
-* SSH private keys,
-* personal absolute paths,
-* dataset files,
-* model checkpoints.
-
-Use relative paths whenever possible. The scripts should be launched from the repository root and rely on:
-
-```bash
-cd "$SLURM_SUBMIT_DIR"
+```text
+outputs/slurm_logs/
 ```
-
----
 
 ## Typical Workflow
 
 ```bash
-# Update code
-git pull
-
-# Validate data
+git pull --ff-only
+bash scripts/setup_cluster_env.sh
 python scripts/validate_data.py --config configs/baseline.yaml
-
-# Create split
 python scripts/make_split.py --config configs/baseline.yaml
-
-# Submit training job
-sbatch jobs/train_baseline.slurm
-
-# Monitor logs
-tail -f outputs/logs/<job_log_file>
+sbatch jobs/train.slurm
+CONFIG_PATH=configs/convnext_small.yaml sbatch jobs/train.slurm
 ```
+
+After training, copy the full run folder or at least:
+
+```text
+outputs/experiments/<run_id>/predictions/val_predictions.csv
+```
+
+for local analysis.
+
+## Security Rules
+
+These job files can be committed to GitHub as long as they do not contain
+secrets. Never commit W&B API keys, GitHub tokens, passwords, SSH private keys,
+dataset files, checkpoints, predictions or Slurm logs.

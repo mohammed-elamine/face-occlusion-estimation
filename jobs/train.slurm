@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=face_occ_baseline
-#SBATCH --output=outputs/logs/%x_%j.out
-#SBATCH --error=outputs/logs/%x_%j.err
+#SBATCH --job-name=face_occ_train
+#SBATCH --output=outputs/slurm_logs/%x_%j.out
+#SBATCH --error=outputs/slurm_logs/%x_%j.err
 #SBATCH --partition=3090
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
@@ -19,7 +19,7 @@ module load cuda/12.4
 module load uv
 hash -r
 
-# Make libbz2 visible to Python's bz2 module.
+# Required because the cluster Python module needs libbz2 at runtime.
 export LD_LIBRARY_PATH="/projects/share/apps/miniconda3/25.5.1/lib:${LD_LIBRARY_PATH:-}"
 
 # Return to the directory where sbatch was launched, usually the repository root.
@@ -27,19 +27,25 @@ cd "$SLURM_SUBMIT_DIR"
 
 echo "Working directory: $(pwd)"
 
-# Check that the virtual environment was created with `uv sync`.
+# Default to the starter config, but allow CONFIG_PATH=... sbatch jobs/train.slurm.
+CONFIG_PATH="${CONFIG_PATH:-configs/baseline.yaml}"
+echo "Config path: $CONFIG_PATH"
+
+mkdir -p outputs/slurm_logs
+
+if [ ! -f "$CONFIG_PATH" ]; then
+    echo "ERROR: Config file not found: $CONFIG_PATH"
+    exit 1
+fi
+
 if [ ! -f ".venv/bin/activate" ]; then
     echo "ERROR: .venv/bin/activate not found."
     echo "Create the environment once from the repository root with:"
-    echo "  module purge"
-    echo "  module load python/3.11 cuda/12.4 uv"
-    echo "  uv sync --frozen --extra wandb"
+    echo "  bash scripts/setup_cluster_env.sh"
     exit 1
 fi
 
 source .venv/bin/activate
-
-mkdir -p outputs/logs outputs/checkpoints outputs/predictions outputs/reports
 
 echo "Python: $(which python)"
 python --version
@@ -68,6 +74,6 @@ print("torchvision OK")
 PY
 
 echo "Starting training..."
-python scripts/train.py --config configs/baseline.yaml
+python scripts/train.py --config "$CONFIG_PATH"
 
 echo "Job finished at $(date)"

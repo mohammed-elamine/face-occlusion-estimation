@@ -26,6 +26,7 @@ class Config(dict):
 
 
 def _wrap(value: Any) -> Any:
+    # Wrap nested mappings lazily so cfg.data.train_csv works at any depth.
     if isinstance(value, dict) and not isinstance(value, Config):
         return Config(value)
     return value

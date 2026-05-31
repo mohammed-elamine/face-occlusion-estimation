@@ -1,4 +1,4 @@
-"""LightningDataModule for the Face Occlusion baseline."""
+"""LightningDataModule shared by all Face Occlusion training configs."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytorch_lightning as pl
+import torch
 from torch.utils.data import DataLoader
 
 from .dataset import FaceOcclusionDataset
@@ -27,7 +28,9 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
         cfg = self.cfg
         split_path = Path(cfg.split.split_path)
         if split_path.exists():
+            # Reuse the saved split so different experiment configs share the same validation set.
             return
+        # Create the configured split lazily so train.py works after a fresh checkout.
         df = pd.read_csv(cfg.data.train_csv)
         split = make_stratified_split(
             df,
@@ -50,6 +53,7 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
         if stage in (None, "fit", "validate"):
             df = pd.read_csv(cfg.data.train_csv)
             split = load_split(cfg.split.split_path)
+            # The split stores ids only; metadata is reloaded from train.csv for each run.
             merged = df.merge(split, on=cfg.data.id_col, how="inner")
             if len(merged) != len(df):
                 missing = len(df) - len(merged)
@@ -74,6 +78,7 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
 
         if stage in (None, "test", "predict"):
             test_df = pd.read_csv(cfg.data.test_csv)
+            # Some challenge test files include gender for fairness-aware submission.
             gender_col = (
                 cfg.data.gender_col
                 if cfg.data.gender_col in test_df.columns
@@ -94,18 +99,21 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
     # ------------------------------------------------------------------
     def _loader(self, ds, batch_size, shuffle, drop_last):
         num_workers = int(self.cfg.data.num_workers)
+        # persistent_workers avoids worker restart overhead when num_workers > 0.
+        # Pinned memory helps CUDA transfers, but PyTorch warns that MPS does not support it.
+        pin_memory = torch.cuda.is_available()
         return DataLoader(
             ds,
             batch_size=batch_size,
             shuffle=shuffle,
             drop_last=drop_last,
             num_workers=num_workers,
-            pin_memory=True,
+            pin_memory=pin_memory,
             persistent_workers=num_workers > 0,
         )
 
     def train_dataloader(self) -> DataLoader:
-        # TODO: add optional gender x occlusion balanced sampler after baseline diagnostics.
+        # TODO: add an optional gender x occlusion sampler if diagnostics show imbalance.
         return self._loader(self.train_ds, self.cfg.training.batch_size, True, True)
 
     def val_dataloader(self) -> DataLoader:

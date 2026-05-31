@@ -18,6 +18,7 @@ from sklearn.model_selection import train_test_split
 
 def _occlusion_bin(values: np.ndarray, bins: Sequence[float]) -> np.ndarray:
     edges = np.asarray(bins, dtype=float)
+    # np.digitize maps each target to a coarse difficulty bucket.
     idx = np.digitize(values, edges[1:-1], right=False)
     return idx.astype(int)
 
@@ -40,7 +41,8 @@ def make_stratified_split(
         raise ValueError(f"Gender column '{gender_col}' not in dataframe.")
 
     targets = df[target_col].astype(float).to_numpy()
-    if targets.max() > 1.5:  # auto normalize percent -> unit
+    if targets.max() > 1.5:
+        # Split bins are defined in [0, 1], so percent labels must be normalized.
         targets = targets / 100.0
     occ_bin = _occlusion_bin(targets, bins)
     gender = df[gender_col].astype(str).to_numpy()

@@ -10,6 +10,7 @@ import numpy as np
 
 def prediction_histogram(preds: np.ndarray, title: str = "Predictions") -> plt.Figure:
     fig, ax = plt.subplots(figsize=(5, 3))
+    # Identity-head models can predict outside [0, 1], so include the raw range.
     ax.hist(preds, bins=40, range=(min(0.0, float(preds.min())), max(1.0, float(preds.max()))))
     ax.set_title(title)
     ax.set_xlabel("value")
@@ -21,6 +22,7 @@ def prediction_histogram(preds: np.ndarray, title: str = "Predictions") -> plt.F
 def scatter_pred_vs_target(preds: np.ndarray, targets: np.ndarray) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.scatter(targets, preds, s=4, alpha=0.4)
+    # The diagonal is perfect prediction.
     ax.plot([0, 1], [0, 1], "r--", linewidth=1)
     ax.set_xlim(0, 1)
     ax.set_ylim(min(-0.1, float(preds.min())), max(1.1, float(preds.max())))
