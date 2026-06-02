@@ -137,6 +137,63 @@ class FaceOcclusionLitModule(pl.LightningModule):
             db_err = weighted_mse(preds[mask], targets[mask], clip=True)
             self.log(f"val/database/{database}_err", db_err, batch_size=int(mask.sum()))
 
+        # ── Additional subgroup diagnostics: bias, MAE, count ─────────────────────
+        preds_clipped = np.clip(preds, 0.0, 1.0)
+        errors = preds_clipped - targets
+
+        # Global MAE / bias / RMSE
+        self.log("val/mae", float(np.abs(errors).mean()), batch_size=num_val)
+        self.log("val/bias", float(errors.mean()), batch_size=num_val)
+        self.log("val/rmse", float(np.sqrt((errors**2).mean())), batch_size=num_val)
+
+        # Per-gender MAE, bias, count
+        for g_val, g_label in ((self._female_value, "female"), (self._male_value, "male")):
+            g_mask = gender_str == g_val
+            if not g_mask.any():
+                continue
+            n = int(g_mask.sum())
+            self.log(f"val/{g_label}_mae", float(np.abs(errors[g_mask]).mean()), batch_size=n)
+            self.log(f"val/{g_label}_bias", float(errors[g_mask].mean()), batch_size=n)
+            self.log(f"val/{g_label}_count", float(n), batch_size=n)
+
+        # Per-occlusion-bin weighted_mse, MAE, bias, count
+        for i in range(len(bins) - 1):
+            lo, hi = float(bins[i]), float(bins[i + 1])
+            bin_label = f"{lo:.2f}_{hi:.2f}"
+            last_bin = i == len(bins) - 2
+            b_mask = (targets >= lo) & (targets <= hi if last_bin else targets < hi)
+            n = int(b_mask.sum())
+            if n == 0:
+                continue
+            self.log(f"val/bin_{bin_label}_count", float(n), batch_size=n)
+            self.log(
+                f"val/bin_{bin_label}_weighted_mse",
+                weighted_mse(preds[b_mask], targets[b_mask], clip=True),
+                batch_size=n,
+            )
+            self.log(
+                f"val/bin_{bin_label}_mae",
+                float(np.abs(errors[b_mask]).mean()),
+                batch_size=n,
+            )
+            self.log(
+                f"val/bin_{bin_label}_bias",
+                float(errors[b_mask].mean()),
+                batch_size=n,
+            )
+
+        # Per-database MAE, bias, count
+        for database in sorted(np.unique(databases)):
+            db_mask = databases == database
+            n = int(db_mask.sum())
+            self.log(
+                f"val/database/{database}_mae",
+                float(np.abs(errors[db_mask]).mean()),
+                batch_size=n,
+            )
+            self.log(f"val/database/{database}_bias", float(errors[db_mask].mean()), batch_size=n)
+            self.log(f"val/database/{database}_count", float(n), batch_size=n)
+
         # train.py reads this after trainer.validate() to write val_predictions.csv.
         self._last_val_outputs = {
             "preds": preds,

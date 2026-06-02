@@ -66,6 +66,7 @@ class FaceOcclusionDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         row = self.df.iloc[idx]
         rel_path = str(row[self.image_col])
+        # cfg.data.image_root points to the crop root; CSV paths are relative to it.
         path = self.image_root / rel_path
         try:
             with Image.open(path) as img:
