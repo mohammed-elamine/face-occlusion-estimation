@@ -45,6 +45,12 @@ face-occlusion-estimation/
 |-- assets/                 # Logos and public README illustrations
 |-- configs/                # YAML experiment configs
 |-- data/                   # Local challenge data, ignored by git
+|   |-- occlusion_datasets/ # train.csv and test_students.csv
+|   `-- crops/
+|       `-- Crop_224_5fp_100K/
+|           |-- database1/
+|           |-- database2/
+|           `-- database3/
 |-- docs/                   # Project-level documentation
 |-- jobs/                   # Slurm launchers and cluster notes
 |-- notebooks/              # Optional exploratory notebooks
@@ -138,6 +144,31 @@ The training CSV is read from `cfg.data.train_csv`. The dataset expects:
 ```text
 filename, FaceOcclusion, gender
 ```
+
+The project follows the teacher-provided data layout:
+
+```text
+data/
+|-- occlusion_datasets/
+|   |-- train.csv
+|   `-- test_students.csv
+`-- crops/
+    `-- Crop_224_5fp_100K/
+        |-- database1/
+        |-- database2/
+        `-- database3/
+```
+
+CSV filenames remain relative paths such as
+`database3/database3/m.0109kg/0-FaceId-0_align.webp`. The dataset therefore
+loads images with:
+
+```text
+cfg.data.image_root / filename
+```
+
+For the baseline config, `cfg.data.image_root` is
+`data/crops/Crop_224_5fp_100K`.
 
 The exact column names come from the config:
 
@@ -328,7 +359,8 @@ plots. It reports metrics by gender, occlusion bin, database, database x
 occlusion bin, gender x occlusion bin and database x gender. If the run folder
 contains one split snapshot under `splits/`, or if you pass `--split-csv`, it
 also writes metrics by seen/unseen validation group. Use
-`--save-image-grids --image-root data` to add small qualitative grids of the
+`--save-image-grids --image-root data/crops/Crop_224_5fp_100K` to add small
+qualitative grids of the
 largest errors.
 
 ## Metric Logic

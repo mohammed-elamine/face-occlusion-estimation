@@ -13,9 +13,9 @@ experiment:
   create_latest_pointer: true
 
 data:
-  train_csv: data/train.csv
-  test_csv: data/test_students.csv
-  image_root: data
+  train_csv: data/occlusion_datasets/train.csv
+  test_csv: data/occlusion_datasets/test_students.csv
+  image_root: data/crops/Crop_224_5fp_100K
   image_col: filename
   target_col: FaceOcclusion
   gender_col: gender
