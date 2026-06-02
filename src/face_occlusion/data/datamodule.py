@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 
 from .dataset import FaceOcclusionDataset
 from .metadata import add_path_metadata
+from .samplers import build_batch_sampler_from_config
 from .splits import load_split, make_stratified_split, save_split
 from .transforms import build_eval_transform, build_train_transform
 
@@ -114,8 +115,25 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self) -> DataLoader:
-        # TODO: add an optional gender x occlusion sampler if diagnostics show imbalance.
-        return self._loader(self.train_ds, self.cfg.training.batch_size, True, True)
+        batch_size = int(self.cfg.training.batch_size)
+        sampler = build_batch_sampler_from_config(self.train_df, self.cfg, batch_size=batch_size)
+        if sampler is not None:
+            sampler.log_summary()
+            # Save summary next to experiment logs when a run directory is available.
+            run_dir = self.cfg.get("experiment", {}).get("run_dir", None)
+            if run_dir is not None:
+                sampler.save_summary(Path(run_dir) / "reports" / "sampler_summary.json")
+            # batch_sampler is mutually exclusive with batch_size/shuffle/drop_last.
+            num_workers = int(self.cfg.data.num_workers)
+            pin_memory = torch.cuda.is_available()
+            return DataLoader(
+                self.train_ds,
+                batch_sampler=sampler,
+                num_workers=num_workers,
+                pin_memory=pin_memory,
+                persistent_workers=num_workers > 0,
+            )
+        return self._loader(self.train_ds, batch_size, shuffle=True, drop_last=True)
 
     def val_dataloader(self) -> DataLoader:
         return self._loader(self.val_ds, 128, False, False)
