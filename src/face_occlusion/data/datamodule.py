@@ -115,9 +115,13 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
                 background_augment = BackgroundAugment(
                     mask_lookup=mask_lookup,
                     p=float(bg_cfg.get("p", 0.5)),
-                    modes=tuple(bg_cfg.get("modes", ["replace", "brightness", "noise"])),
+                    modes=tuple(
+                        bg_cfg.get("modes", ["replace", "brightness", "noise", "blur", "texture"])
+                    ),
                     seed=int(bg_cfg.get("seed", synthetic_seed)),
                     noise_std=float(bg_cfg.get("noise_std", 25.0)),
+                    dilate_px=int(bg_cfg.get("dilate_px", 2)),
+                    feather_px=float(bg_cfg.get("feather_px", 2.0)),
                 )
                 print(f"[datamodule] Background augmentation: masks from {mask_source}")
             else:
@@ -159,6 +163,11 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
                 id_col=cfg.data.id_col,
                 target_scale=cfg.data.target_scale,
             )
+            # Background-invariance consistency loss needs a 2nd bg-randomized view per
+            # item; only meaningful when an augmenter (face mask) is available.
+            losses_cfg = cfg.get("losses", {})
+            bgc_cfg = losses_cfg.get("bg_consistency", {}) if hasattr(losses_cfg, "get") else {}
+            return_bg_pair = bool(bgc_cfg.get("enabled", False)) and background_augment is not None
             self.train_ds = FaceOcclusionDataset(
                 train_df,
                 transform=train_tf,
@@ -169,6 +178,7 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
                 synthetic_target_size=synthetic_target_size,
                 synthetic_seed=synthetic_seed,
                 background_augment=background_augment,
+                return_bg_pair=return_bg_pair,
                 **common,
             )
             self.val_ds = FaceOcclusionDataset(val_df, transform=eval_tf, mode="val", **common)

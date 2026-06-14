@@ -283,6 +283,30 @@ class FaceOcclusionLitModule(pl.LightningModule):
             current_epoch=0,
         )
 
+        # ── Background-invariance consistency wiring ──────────────────────
+        # Penalizes the prediction changing between two background-randomized views
+        # of the same face (batch carries ``bg_view_image``). Pushes the model to
+        # read occlusion from the face, not the background. Lands on the regression
+        # head; kept small + warmed. Requires augmentation.background.enabled.
+        bgc_cfg = losses_cfg.get("bg_consistency", {}) if losses_cfg else {}
+        self._bgc_enabled = bool(bgc_cfg.get("enabled", False)) if bgc_cfg else False
+        self._bgc_weight = float(bgc_cfg.get("weight", 0.1)) if bgc_cfg else 0.1
+        self._bgc_warmup_epochs = int(bgc_cfg.get("warmup_epochs", 0)) if bgc_cfg else 0
+        self._bgc_warmup_start_weight = (
+            float(bgc_cfg.get("warmup_start_weight", 0.0)) if bgc_cfg else 0.0
+        )
+        self._bgc_loss_type = str(bgc_cfg.get("loss", "l1")) if bgc_cfg else "l1"
+        if self._bgc_loss_type not in ("l1", "l2"):
+            raise ValueError(
+                f"losses.bg_consistency.loss must be 'l1' or 'l2', got {self._bgc_loss_type!r}"
+            )
+        _scheduled_loss_weight(
+            target_weight=self._bgc_weight,
+            warmup_epochs=self._bgc_warmup_epochs,
+            warmup_start_weight=self._bgc_warmup_start_weight,
+            current_epoch=0,
+        )
+
         # ── Distribution-aware regression reweighting (Intervention B) ────
         # Optional per-sample importance reweighting of the regression loss toward a
         # 'balanced' or 'test_matched' occlusion distribution. Reuses the SAME operator as
@@ -378,11 +402,13 @@ class FaceOcclusionLitModule(pl.LightningModule):
         loss_cons = self._compute_consistency_loss(outputs)
         loss_mono = self._compute_monotonicity_loss(outputs)
         loss_rank, rank_acc = self._compute_ranking_loss(batch)
+        loss_bgc = self._compute_bg_consistency_loss(batch, preds)
         loss = loss_reg
         lambda_ord = self._effective_ordinal_weight() if loss_ord is not None else 0.0
         lambda_cons = self._effective_consistency_weight() if loss_cons is not None else 0.0
         lambda_mono = self._effective_monotonicity_weight() if loss_mono is not None else 0.0
         lambda_rank = self._effective_ranking_weight() if loss_rank is not None else 0.0
+        lambda_bgc = self._effective_bg_consistency_weight() if loss_bgc is not None else 0.0
         if loss_ord is not None:
             loss = loss + lambda_ord * loss_ord
         if loss_cons is not None:
@@ -391,6 +417,8 @@ class FaceOcclusionLitModule(pl.LightningModule):
             loss = loss + lambda_mono * loss_mono
         if loss_rank is not None:
             loss = loss + lambda_rank * loss_rank
+        if loss_bgc is not None:
+            loss = loss + lambda_bgc * loss_bgc
 
         # Keep `train/loss` = total so existing dashboards continue to work.
         self.log(
@@ -403,7 +431,7 @@ class FaceOcclusionLitModule(pl.LightningModule):
         )
         reweight_on = self._reg_reweight != "none"
         if reweight_on or any(
-            loss_x is not None for loss_x in (loss_ord, loss_cons, loss_mono, loss_rank)
+            loss_x is not None for loss_x in (loss_ord, loss_cons, loss_mono, loss_rank, loss_bgc)
         ):
             self.log(
                 "train/loss_reg", loss_reg, on_step=False, on_epoch=True, batch_size=batch_size
@@ -465,6 +493,17 @@ class FaceOcclusionLitModule(pl.LightningModule):
             self.log(
                 "train/rank_ordering_acc",
                 rank_acc,
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
+        if loss_bgc is not None:
+            self.log(
+                "train/loss_bgc", loss_bgc, on_step=False, on_epoch=True, batch_size=batch_size
+            )
+            self.log(
+                "train/lambda_bgc",
+                float(lambda_bgc),
                 on_step=False,
                 on_epoch=True,
                 batch_size=batch_size,
@@ -581,6 +620,30 @@ class FaceOcclusionLitModule(pl.LightningModule):
             warmup_start_weight=self._rank_warmup_start_weight,
             current_epoch=int(self.current_epoch),
         )
+
+    def _effective_bg_consistency_weight(self) -> float:
+        """Current-epoch background-consistency coefficient after optional linear warmup."""
+        return _scheduled_loss_weight(
+            target_weight=self._bgc_weight,
+            warmup_epochs=self._bgc_warmup_epochs,
+            warmup_start_weight=self._bgc_warmup_start_weight,
+            current_epoch=int(self.current_epoch),
+        )
+
+    def _compute_bg_consistency_loss(self, batch, preds: torch.Tensor) -> torch.Tensor | None:
+        """Penalize prediction disagreement between two background-randomized views.
+
+        Forwards ``bg_view_image`` (same face, different background) and compares its
+        prediction to ``preds`` (the main view). Both views receive gradient so the
+        representation is pulled toward background-invariance. Returns ``None`` when
+        disabled or the batch carries no second view.
+        """
+        if not self._bgc_enabled or "bg_view_image" not in batch:
+            return None
+        preds_bg = self(batch["bg_view_image"]).y_pred
+        if self._bgc_loss_type == "l2":
+            return torch.mean((preds - preds_bg) ** 2)
+        return torch.mean(torch.abs(preds - preds_bg))
 
     def _compute_ranking_loss(self, batch) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         """RankNet loss + ordering accuracy over MediaPipe-valid synthetic triples.

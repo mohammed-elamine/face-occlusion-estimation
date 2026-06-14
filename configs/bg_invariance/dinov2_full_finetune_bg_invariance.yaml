@@ -1,0 +1,125 @@
+# DINOv2 ViT-B reg, FULL fine-tune (NO LoRA) + background-INVARIANCE.
+# The DINOv2 counterpart of configs/bg_invariance/convnext_small_bg_invariance.yaml: same bg-invariance
+# stack (feathered label-preserving background aug + a bg_consistency loss) but on a fully
+# fine-tuned DINOv2 backbone instead of ConvNeXt. "dino only, no lora" => lora.enabled: false,
+# so the whole ~86M-param backbone trains (small backbone LR to preserve pretrained features).
+# DINOv2-appropriate choices vs the ConvNeXt config: MLP head + sigmoid + gender_balanced loss
+# + discriminative LRs (the ConvNeXt champion uses a linear head + identity + plain weighted_mse
+# + single LR). Sampler off (mirrors the ConvNeXt bg config and isolates the bg-invariance effect).
+#
+# REQUIRES face masks (see scripts.data.build_face_masks); without them the background aug and
+# the consistency loss are silent no-ops. Memory note: the bg_consistency loss does a 2nd full
+# forward/backward per step; if OOM, lower training.batch_size.
+project:
+  name: face-occlusion-estimation
+  seed: 42
+  output_dir: outputs
+  deterministic: false
+experiment:
+  name: dinov2_full_finetune_bg_invariance
+  output_root: outputs/experiments
+  save_git_info: true
+  save_config: true
+  create_latest_pointer: true
+data:
+  train_csv: data/raw/occlusion_datasets/train.csv
+  test_csv: data/raw/occlusion_datasets/test_students.csv
+  image_root: data/raw/crops/Crop_224_5fp_100K
+  image_col: filename
+  target_col: FaceOcclusion
+  gender_col: gender
+  id_col: filename
+  female_value: 0.0
+  male_value: 1.0
+  submission_dummy_gender: 0
+  target_scale: auto
+  val_size: 0.2
+  num_workers: 8
+split:
+  strategy: row_stratified
+  occlusion_bins: [0.0, 0.05, 0.1, 0.2, 0.4, 0.6, 1.0]
+  split_path: outputs/splits/canonical_row_split.csv
+  val_size: 0.2
+  random_state: 42
+  stratify_by: [gender, occlusion_bin, database]
+  group_col: group_id
+  allow_missing_rows: false
+model:
+  backbone: vit_base_patch14_reg4_dinov2.lvd142m
+  pretrained: true
+  img_size: 224
+  output_activation: sigmoid
+  dropout: 0.0
+  use_ordinal_head: false
+  head:
+    type: mlp                          # LayerNorm -> Linear(768,256) -> GELU -> Dropout -> Linear(256,1)
+    hidden_dim: 256
+    dropout: 0.2
+  lora:
+    enabled: false                     # FULL fine-tune: the whole backbone trains (no LoRA)
+losses:
+  regression:
+    type: gender_balanced
+    reweight: none
+  bg_consistency:
+    enabled: true                      # penalize prediction change across background variants
+    weight: 0.1
+    warmup_epochs: 2
+    warmup_start_weight: 0.0
+    loss: l1
+  ordinal: {enabled: false}
+  consistency: {enabled: false}
+  monotonicity: {enabled: false}
+  ranking: {enabled: false}
+  triplet: {enabled: false}
+synthetic_occlusion:
+  enabled: false
+triplet_sampling:
+  enabled: false
+training:
+  batch_size: 64
+  max_epochs: 20
+  learning_rate: 2.0e-5                # fallback only; head_lr/backbone_lr drive the optimizer
+  head_lr: 1.0e-3                      # fresh MLP head: high LR
+  backbone_lr: 2.0e-5                  # full backbone: SMALL LR to preserve pretrained features
+  weight_decay: 1.0e-4               # on 2-D weights only; raise (e.g. 0.05) if it overfits
+  warmup_frac: 0.05                  # linear warmup -> per-step cosine
+  optimizer: adamw
+  scheduler: cosine
+  precision: bf16-mixed
+  float32_matmul_precision: high
+  gradient_clip_val: 1.0             # full-FT stability
+  early_stopping_patience: 5
+augmentation:
+  resize: 224
+  horizontal_flip_p: 0.5
+  color_jitter_p: 0.5
+  brightness: 0.1
+  contrast: 0.1
+  saturation: 0.05
+  rotation_degrees: 3
+  background:
+    enabled: true
+    mask_dir: data/face_masks          # full-coverage store; build with scripts.data.build_face_masks
+    p: 0.5
+    modes: [replace, brightness, noise, blur, shuffle, texture]
+    dilate_px: 2
+    feather_px: 2.0
+    noise_std: 25.0
+inference:
+  tta: false
+logging:
+  use_wandb: false
+  wandb_project: face-occlusion-estimation
+  run_name: dinov2_full_finetune_bg_invariance
+  log_images: false
+  log_prediction_plots: true
+  log_images_every_n_epochs: 1
+  num_logged_images: 16
+sampler:
+  enabled: false
+checkpoint:
+  monitor: val/score
+  mode: min
+  save_top_k: 1
+  filename: best

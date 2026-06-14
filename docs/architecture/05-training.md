@@ -31,6 +31,7 @@ loss = λ_reg · loss_reg
      + λ_cons · loss_cons    (regression↔ordinal consistency,  losses.consistency)
      + λ_mono · loss_mono    (ordinal monotonicity hinge,      losses.monotonicity)
      + λ_rank · loss_rank    (synthetic monotonic ranking,     losses.ranking)
+     + λ_bgc  · loss_bgc     (background-invariance consistency, losses.bg_consistency)
 ```
 
 Each `λ` is the **effective** (post-warmup) weight from an `_effective_*_weight()` method
@@ -46,9 +47,21 @@ Gating and key config (see [02](02-configuration.md), [04](04-models.md) for the
 | consistency | `use_ordinal_head` + `losses.consistency.enabled` | `weight`, `temperature`, `mode`, warmup |
 | monotonicity | `use_ordinal_head` + `losses.monotonicity.enabled` | `weight`, warmup |
 | ranking | `losses.ranking.enabled` (+ synthetic views in batch) | `weight`, warmup |
+| bg-consistency | `losses.bg_consistency.enabled` (+ `bg_view_image` in batch) | `weight`, `loss` (l1/l2), warmup |
 
 Misconfiguration (a coupled loss enabled without the ordinal head) raises `ValueError` at
 `__init__`.
+
+### Background-invariance consistency (`losses.bg_consistency`)
+
+`_compute_bg_consistency_loss(batch, preds)` forwards a second, differently-background-
+randomized view of the same face (`bg_view_image`, produced by `BackgroundAugment.make_variant`
+— see [03 — Data](03-data.md)) and penalizes the prediction disagreement
+`‖ŷ(view) − ŷ(bg_view)‖` (`l1` or `l2`). Both views receive gradient, pulling the
+representation toward background-invariance — an explicit "ignore everything but the face"
+signal that augmentation only encourages implicitly. The datamodule sets the dataset's
+`return_bg_pair` when this loss is enabled **and** a face mask source exists; needs
+`augmentation.background.enabled`. Logged as `train/loss_bgc` / `train/lambda_bgc`.
 
 ### Distribution-aware reweighting (`losses.regression.reweight`)
 
@@ -68,7 +81,8 @@ reweighted objective. This shares its target distribution with the sampler's
   via its `_compute_*` helper; logs every active term, its effective weight, `train/lr`, and
   ranking diagnostics. The **ranking** term runs the model on the stacked
   `synthetic_clean/mild/strong` images and applies `monotonic_ranking_loss` over the
-  `synthetic_valid` subset.
+  `synthetic_valid` subset. The **bg-consistency** term runs a second forward on
+  `bg_view_image` and penalizes its disagreement with the main prediction.
 - `validation_step` — forward, clip predictions to `[0,1]`, compute the metric-convention
   weighted MSE, and **buffer** predictions/targets/genders/(ordinal logits)/metadata. bf16
   outputs are cast with `.float()` before CPU/numpy transfer (bfloat16 has no numpy dtype).

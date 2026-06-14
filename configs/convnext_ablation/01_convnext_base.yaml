@@ -1,0 +1,78 @@
+# Ablation 01 — CAPACITY: convnext_small -> convnext_base (only change vs 00_baseline).
+# A bigger fully-fine-tuned CNN is the most likely real gain for a model that already works
+# and has plateaued. Watch for overfitting (wd 0.03 helps; raise if val diverges from train).
+project: {name: face-occlusion-estimation, seed: 42, output_dir: outputs, deterministic: false}
+experiment:
+  name: cnx_ablation_01_convnext_base
+  output_root: outputs/experiments
+  save_git_info: true
+  save_config: true
+  create_latest_pointer: true
+data:
+  train_csv: data/raw/occlusion_datasets/train.csv
+  test_csv: data/raw/occlusion_datasets/test_students.csv
+  image_root: data/raw/crops/Crop_224_5fp_100K
+  image_col: filename
+  target_col: FaceOcclusion
+  gender_col: gender
+  id_col: filename
+  female_value: 0.0
+  male_value: 1.0
+  submission_dummy_gender: 0
+  target_scale: auto
+  val_size: 0.2
+  num_workers: 8
+split:
+  strategy: row_stratified
+  occlusion_bins: [0.0, 0.05, 0.1, 0.2, 0.4, 0.6, 1.0]
+  split_path: outputs/splits/canonical_row_split.csv
+  val_size: 0.2
+  random_state: 42
+  stratify_by: [gender, occlusion_bin, database]
+  group_col: group_id
+  allow_missing_rows: false
+model:
+  backbone: convnext_base.fb_in22k_ft_in1k       # CHANGED: small -> base (capacity)
+  pretrained: true
+  output_activation: identity
+  dropout: 0.0
+  use_ordinal_head: false
+losses:
+  regression: {type: weighted_mse, reweight: none}
+  ordinal: {enabled: false}
+  consistency: {enabled: false}
+  monotonicity: {enabled: false}
+  ranking: {enabled: false}
+  triplet: {enabled: false}
+synthetic_occlusion: {enabled: false}
+triplet_sampling: {enabled: false}
+training:
+  batch_size: 64
+  max_epochs: 20
+  learning_rate: 1.0e-4
+  weight_decay: 0.03
+  optimizer: adamw
+  scheduler: cosine
+  precision: 16-mixed
+  float32_matmul_precision: high
+  gradient_clip_val: 1.0
+  early_stopping_patience: 5
+augmentation:
+  resize: 224
+  horizontal_flip_p: 0.5
+  color_jitter_p: 0.5
+  brightness: 0.1
+  contrast: 0.1
+  saturation: 0.05
+  rotation_degrees: 3
+  background: {enabled: false}
+inference:
+  tta: false
+logging:
+  use_wandb: false
+  wandb_project: face-occlusion-estimation
+  run_name: cnx_ablation_01_convnext_base
+  log_images: false
+  log_prediction_plots: true
+sampler: {enabled: false}
+checkpoint: {monitor: val/score, mode: min, save_top_k: 1, filename: best}

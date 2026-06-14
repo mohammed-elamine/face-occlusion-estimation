@@ -54,7 +54,10 @@ in later chapters):
 - `losses.regression.reweight` — distribution-aware sample reweighting (`none|balanced|test_matched`).
 - `sampler.enabled` — gender × occlusion balanced sampling.
 - `model.lora.enabled` — PEFT LoRA fine-tuning.
-- `augmentation.background.enabled` — label-preserving background perturbation.
+- `augmentation.background.enabled` — feathered, label-preserving background perturbation
+  (modes: replace/brightness/noise/blur/shuffle/texture).
+- `losses.bg_consistency.enabled` — background-invariance consistency loss (needs background
+  augmentation + a face-mask source).
 
 Misconfigurations are caught early: e.g. enabling `losses.consistency`/`monotonicity`
 without `model.use_ordinal_head` raises `ValueError` at module init

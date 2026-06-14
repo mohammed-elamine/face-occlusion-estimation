@@ -1,0 +1,113 @@
+# ConvNeXt-small champion recipe (val 0.00129) + background-INVARIANCE.
+# = the best baseline (full fine-tune, weighted_mse, identity output, no sampler, mild aug)
+# PLUS: (1) upgraded label-preserving background augmentation (feathered soft-alpha mask +
+# diverse modes: replace/brightness/noise/blur/shuffle/texture), and (2) a background-
+# invariance consistency loss that penalizes the prediction changing between two
+# background-randomized views of the same face. Goal: push the model to read occlusion from
+# the face, not the background.
+#
+# REQUIRES face masks. The datamodule prefers a full-coverage face-mask store at
+# augmentation.background.mask_dir (build it with `python -m scripts.data.build_face_masks`);
+# it falls back to the synthetic cache (limited coverage) if the store is absent. Without any
+# masks, both the augmentation and the consistency loss are silent no-ops.
+project:
+  name: face-occlusion-estimation
+  seed: 42
+  output_dir: outputs
+  deterministic: false
+experiment:
+  name: convnext_small_bg_invariance
+  output_root: outputs/experiments
+  save_git_info: true
+  save_config: true
+  create_latest_pointer: true
+data:
+  train_csv: data/raw/occlusion_datasets/train.csv
+  test_csv: data/raw/occlusion_datasets/test_students.csv
+  image_root: data/raw/crops/Crop_224_5fp_100K
+  image_col: filename
+  target_col: FaceOcclusion
+  gender_col: gender
+  id_col: filename
+  female_value: 0.0
+  male_value: 1.0
+  submission_dummy_gender: 0
+  target_scale: auto
+  val_size: 0.2
+  num_workers: 8
+split:
+  strategy: row_stratified
+  occlusion_bins: [0.0, 0.05, 0.1, 0.2, 0.4, 0.6, 1.0]
+  split_path: outputs/splits/canonical_row_split.csv
+  val_size: 0.2
+  random_state: 42
+  stratify_by: [gender, occlusion_bin, database]
+  group_col: group_id
+  allow_missing_rows: false
+model:
+  backbone: convnext_small.fb_in22k_ft_in1k
+  pretrained: true
+  output_activation: identity          # champion recipe uses identity + clip (not sigmoid)
+  dropout: 0.0
+  use_ordinal_head: false
+losses:
+  regression:
+    type: weighted_mse                 # pooled metric loss (champion recipe)
+    reweight: none
+  bg_consistency:
+    enabled: true                      # penalize prediction change across background variants
+    weight: 0.1
+    warmup_epochs: 2                   # ramp in so calibration settles first
+    warmup_start_weight: 0.0
+    loss: l1
+  ordinal: {enabled: false}
+  consistency: {enabled: false}
+  monotonicity: {enabled: false}
+  ranking: {enabled: false}
+  triplet: {enabled: false}
+synthetic_occlusion:
+  enabled: false
+triplet_sampling:
+  enabled: false
+training:
+  batch_size: 64
+  max_epochs: 20
+  learning_rate: 1.0e-4                # single LR over all params (full fine-tune)
+  weight_decay: 0.03
+  optimizer: adamw
+  scheduler: cosine
+  precision: 16-mixed
+  float32_matmul_precision: high
+  gradient_clip_val: 1.0
+  early_stopping_patience: 5
+augmentation:
+  resize: 224
+  horizontal_flip_p: 0.5
+  color_jitter_p: 0.5
+  brightness: 0.1
+  contrast: 0.1
+  saturation: 0.05
+  rotation_degrees: 3
+  background:
+    enabled: true
+    mask_dir: data/face_masks          # full-coverage store; build with scripts.data.build_face_masks
+    p: 0.5
+    modes: [replace, brightness, noise, blur, shuffle, texture]
+    dilate_px: 2
+    feather_px: 2.0
+    noise_std: 25.0
+logging:
+  use_wandb: false
+  wandb_project: face-occlusion-estimation
+  run_name: convnext_small_bg_invariance
+  log_images: false
+  log_prediction_plots: true
+  log_images_every_n_epochs: 1
+  num_logged_images: 16
+sampler:
+  enabled: false
+checkpoint:
+  monitor: val/score
+  mode: min
+  save_top_k: 1
+  filename: best

@@ -83,3 +83,35 @@ def test_background_augment_rejects_bad_params():
         BackgroundAugment(mask_lookup=lambda _id: None, p=2.0)
     with pytest.raises(ValueError):
         BackgroundAugment(mask_lookup=lambda _id: None, modes=("bogus",))
+
+
+@pytest.mark.parametrize("mode", ["blur", "shuffle", "texture"])
+def test_new_modes_preserve_face_and_change_bg(mode):
+    image, mask, arr = _image_and_mask(size=32)
+    out = np.asarray(
+        apply_background_augmentation(image, mask, np.random.default_rng(1), mode=mode)
+    )
+    assert out.shape == arr.shape
+    assert np.array_equal(out[mask], arr[mask])  # feathering forces alpha=1 on the face
+    assert not np.array_equal(out[~mask], arr[~mask])  # background was perturbed
+
+
+def test_feathering_preserves_face_exactly():
+    # Even with large dilation/feather, the true face region is byte-identical.
+    image, mask, arr = _image_and_mask(size=32)
+    out = np.asarray(
+        apply_background_augmentation(
+            image, mask, np.random.default_rng(0), mode="replace", dilate_px=4, feather_px=4.0
+        )
+    )
+    assert np.array_equal(out[mask], arr[mask])
+
+
+def test_make_variant_changes_bg_and_noop_without_mask():
+    image, mask, arr = _image_and_mask(size=32)
+    aug = BackgroundAugment(mask_lookup=lambda _id: mask, seed=5, modes=("blur", "texture"))
+    v = np.asarray(aug.make_variant(image, "x", 0))
+    assert np.array_equal(v[mask], arr[mask])  # face preserved
+    assert not np.array_equal(v[~mask], arr[~mask])  # background changed (forced, ignores p)
+    none_aug = BackgroundAugment(mask_lookup=lambda _id: None, seed=5)
+    assert np.array_equal(np.asarray(none_aug.make_variant(image, "missing", 0)), arr)

@@ -40,6 +40,7 @@ class FaceOcclusionDataset(Dataset):
         synthetic_seed: int = 42,
         synthetic_cache: SyntheticCache | None = None,
         background_augment=None,
+        return_bg_pair: bool = False,
     ) -> None:
         assert mode in {"train", "val", "test"}, f"Unknown mode {mode}"
         self.mode = mode
@@ -47,6 +48,9 @@ class FaceOcclusionDataset(Dataset):
         self.transform = transform
         # Label-preserving background augmentation (only on train images).
         self.background_augment = background_augment if mode == "train" else None
+        # Return a 2nd background-randomized view per item for the bg-invariance
+        # consistency loss (train only; needs an augmenter to produce the variant).
+        self.return_bg_pair = bool(return_bg_pair) if mode == "train" else False
         self.image_col = image_col
         self.target_col = target_col
         self.gender_col = gender_col
@@ -87,6 +91,7 @@ class FaceOcclusionDataset(Dataset):
 
         # Label-preserving background augmentation: perturb only non-face pixels,
         # so the occlusion label stays valid. No-op when the id has no cached mask.
+        clean_pil = image  # pre-augmentation original, reused for the consistency view
         if self.background_augment is not None:
             image = self.background_augment(image, str(row[self.id_col]), idx)
 
@@ -109,6 +114,11 @@ class FaceOcclusionDataset(Dataset):
         if self.mode != "test":
             item["gender"] = torch.tensor(float(row[self.gender_col]), dtype=torch.float32)
             item["target"] = torch.tensor(float(row[self.target_col]), dtype=torch.float32)
+        # Background-invariance consistency view: the same face crop with a different
+        # randomized background. The model should predict the same occlusion for both.
+        if self.return_bg_pair and self.background_augment is not None and self.transform:
+            bg_view = self.background_augment.make_variant(clean_pil, str(row[self.id_col]), idx)
+            item["bg_view_image"] = self.transform(bg_view)
         # Synthetic ranking views (clean < mild < strong). The precomputed cache
         # is the default source; the on-the-fly generator is a fallback used
         # mainly for audits. All views skip spatial augmentation so the ranking

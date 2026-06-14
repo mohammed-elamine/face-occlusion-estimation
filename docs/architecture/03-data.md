@@ -64,6 +64,7 @@ metric and analysis group by gender/identity. `__getitem__(idx)` yields:
 | `synthetic_clean_image` / `_mild_image` / `_strong_image` | `Tensor` | only if synthetic views enabled |
 | `synthetic_mild_severity` / `_strong_severity` | `Tensor` | severity proxies (not labels) |
 | `synthetic_valid` | `Tensor[bool]` | True if the triple is usable |
+| `bg_view_image` | `Tensor (3,H,W)` | 2nd background-randomized view; only if `return_bg_pair` (bg-consistency loss) |
 
 Key behaviors: path metadata is **never fed to the model** (splits/diagnostics only);
 synthetic views and background augmentation are **train-mode only** (val/test stay clean);
@@ -137,11 +138,30 @@ never to relabel real images. Requires the `synthetic` extra (MediaPipe).
 
 ## Background augmentation & mask store
 
-- `data/background_augment.py` — `BackgroundAugment` perturbs **only non-face pixels**
-  (`replace`/`brightness`/`noise`) using a cached face mask, so the occlusion label is
-  unchanged. Applied with probability `p`, per-sample-seeded; a missing mask is a safe
-  no-op.
+Goal: **background-invariance** — perturb only non-face pixels (label-safe) so the model
+reads occlusion from the face, not from background shortcuts.
+
+- `data/background_augment.py` — `BackgroundAugment` perturbs **only non-face pixels** using
+  a cached face mask, so the occlusion label is unchanged. Two design choices serve the
+  invariance goal:
+  - **Soft-alpha feathering** (`_soft_alpha`): the mask is dilated a few px (`dilate_px`,
+    protect hairline/jaw) and Gaussian-blurred (`feather_px`) into an `alpha ∈ [0,1]`; the
+    output is `alpha·face + (1−alpha)·variant`, with `alpha` forced to **1 on the true face**
+    so face pixels are byte-preserved while the boundary is feathered — no hard oval seam for
+    the model to exploit as a localization shortcut.
+  - **Diverse variants** (`_background_variant`, mode menu): `replace` (flat colour),
+    `brightness`, `noise`, `blur` (bokeh), `shuffle` (spatially scrambled own background),
+    `texture` (smooth low-frequency random field). Stronger randomization than a flat fill.
+  - `__call__` applies one random mode with probability `p` (per-sample-seeded; missing mask
+    is a no-op). `make_variant(...)` always produces a fresh, independently-randomized
+    variant — the second view consumed by the background-invariance consistency loss
+    ([05 — Training](05-training.md)). Config: `augmentation.background.{enabled, p, modes,
+    dilate_px, feather_px, noise_std, mask_dir}`.
 - `data/face_mask_store.py` — `FaceMaskStore`: a full-coverage precomputed face-mask store
   (deterministic path per `id`), decoupled from the synthetic cache so background
   augmentation can cover **all** training images, not just synthetic anchors. The datamodule
-  prefers this store and falls back to the synthetic cache's masks.
+  prefers this store and falls back to the synthetic cache's masks. Build it with
+  `python -m scripts.data.build_face_masks` (needs the `synthetic` extra; see
+  [07 — Pipeline](07-pipeline-and-experiments.md)). Coverage caveat: MediaPipe fails on
+  heavily occluded faces, so the high-occlusion tail often has no mask → augmentation is a
+  no-op there.
