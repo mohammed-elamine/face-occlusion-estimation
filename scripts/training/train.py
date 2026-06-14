@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import secrets
 import shutil
 import warnings
 from pathlib import Path
@@ -198,6 +199,35 @@ def _finalize(trainer, module, dm, run_dir: Path, *, interrupted: bool) -> None:
         print(f"[train] WARNING: finalize could not save predictions: {exc}")
 
 
+def _resolve_seed(cfg) -> int:
+    """Resolve ``project.seed`` to a concrete int, drawing a random one when unset.
+
+    A fixed int reproduces a specific run (and is right for clean ablations). ``null`` /
+    ``"random"`` / ``"auto"`` / absent draws a fresh random seed each run so we can explore
+    different weight inits and data orderings. The resolved value is written back into ``cfg``
+    so the run's ``config.yaml`` snapshot and ``metadata.json`` record it — re-running that
+    saved config reproduces the run exactly.
+
+    Note: only training randomness (model init, batch order, sampler) keys off this seed; the
+    val split uses ``split.random_state`` (and is saved-then-reloaded), so a random seed does
+    NOT change the split and paired comparisons stay valid.
+    """
+    raw = cfg.project.get("seed", None) if hasattr(cfg, "get") else None
+    is_random = raw is None or (
+        isinstance(raw, str) and raw.strip().lower() in {"random", "auto", "none", ""}
+    )
+    seed = secrets.randbelow(2**31 - 1) if is_random else int(raw)
+    cfg.setdefault("project", {})["seed"] = seed
+    if is_random:
+        print(
+            f"[train] project.seed not fixed -> randomly selected seed={seed} "
+            "(recorded in config.yaml + metadata.json for reproduction)"
+        )
+    else:
+        print(f"[train] Using fixed seed={seed}")
+    return seed
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -206,6 +236,8 @@ def main() -> None:
     _configure_runtime_noise_filters()
 
     cfg = load_config(args.config)
+    # Resolve the seed BEFORE the run dir / config snapshot so the chosen seed is recorded.
+    _resolve_seed(cfg)
     run_dir = create_run_dir(cfg)
     checkpoint_dir = run_dir / "checkpoints"
 

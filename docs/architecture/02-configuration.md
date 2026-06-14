@@ -37,6 +37,15 @@ A config is a flat set of top-level sections, each consumed by one subsystem:
 | `checkpoint` | `training/callbacks.py` | monitor, mode, save_top_k |
 | `inference` | `scripts/inference/predict_test.py` | TTA flag |
 
+**Seeding (`project.seed`).** A fixed int reproduces a run (and is right for clean ablations).
+Setting it to `null` / `"random"` / omitting it makes `scripts/training/train.py::_resolve_seed`
+draw a fresh random seed per run and write it back into the saved `config.yaml` + `metadata.json`
+— so you get exploration (different inits / data orderings) while staying reproducible (re-run
+the saved config). Only training randomness keys off this; the val split uses
+`split.random_state` and is saved-then-reloaded, so a random seed does **not** change the split,
+and paired comparisons stay valid (pin the same seed across an ablation pair to remove seed
+variance from the Δ).
+
 The mapping is deliberately mechanical: to know what a key does, find the factory that
 reads it. The per-section detail lives in the chapter for that subsystem (linked above and
 in the [index](README.md)).

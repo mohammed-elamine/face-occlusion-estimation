@@ -130,6 +130,7 @@ def save_metadata(
             _config_get(config, ("logging", "run_name"), run_dir.name),
         ),
         "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "seed": _config_get(config, ("project", "seed")),
         "git_commit": _git_output(["rev-parse", "HEAD"]),
         "git_dirty": bool(status.strip()),
         "config_path": str(config_path) if config_path is not None else None,
