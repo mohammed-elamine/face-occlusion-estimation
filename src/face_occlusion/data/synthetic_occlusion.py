@@ -102,16 +102,24 @@ MEDIAPIPE_INSTALL_MESSAGE = (
     "Install it with `uv sync --extra synthetic` or `pip install mediapipe`."
 )
 
-MEDIAPIPE_MODEL_MESSAGE = (
-    "MediaPipe Face Landmarker requires a .task model asset. Download it with "
-    "`curl -L -o tmp/mediapipe/face_landmarker.task "
+MEDIAPIPE_MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
-    "face_landmarker/float16/latest/face_landmarker.task` or set "
-    "FACE_OCCLUSION_MEDIAPIPE_FACE_LANDMARKER to the model path."
+    "face_landmarker/float16/latest/face_landmarker.task"
+)
+
+# Canonical home for the vendored Face Landmarker model (git-ignored; populated by
+# `make mediapipe-model` or auto-downloaded by the builders).
+DEFAULT_MEDIAPIPE_MODEL_DIR = Path("models/mediapipe")
+
+MEDIAPIPE_MODEL_MESSAGE = (
+    "MediaPipe Face Landmarker requires a .task model asset. Get it with "
+    "`make mediapipe-model` (downloads to models/mediapipe/), or "
+    "`uv run python -m scripts.data.download_mediapipe_model`, or set "
+    "FACE_OCCLUSION_MEDIAPIPE_FACE_LANDMARKER to an existing model path."
 )
 
 DEFAULT_MEDIAPIPE_MODEL_PATHS: tuple[Path, ...] = (
-    Path("tmp/mediapipe/face_landmarker.task"),
+    DEFAULT_MEDIAPIPE_MODEL_DIR / "face_landmarker.task",
     Path("assets/mediapipe/face_landmarker.task"),
     Path("data/mediapipe/face_landmarker.task"),
 )
@@ -403,6 +411,53 @@ def _resolve_mediapipe_model_asset_path(path: str | Path | None = None) -> Path 
         if candidate.exists():
             return candidate
     return None
+
+
+def mediapipe_needs_model_asset() -> bool:
+    """True when the installed MediaPipe lacks ``mp.solutions`` and so needs the .task file.
+
+    The legacy ``solutions.face_mesh`` backend bundles its model inside the pip package; the
+    Tasks ``FaceLandmarker`` backend requires a standalone ``face_landmarker.task``.
+    """
+    try:
+        import mediapipe as mp
+    except ModuleNotFoundError:
+        return False
+    return not hasattr(mp, "solutions")
+
+
+def download_mediapipe_model(dest: str | Path | None = None) -> Path:
+    """Download the Face Landmarker ``.task`` model to ``dest`` (default models/mediapipe/)."""
+    import urllib.request
+
+    dest = Path(dest) if dest is not None else DEFAULT_MEDIAPIPE_MODEL_DIR / "face_landmarker.task"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".part")
+    urllib.request.urlretrieve(MEDIAPIPE_MODEL_URL, tmp)  # noqa: S310 (trusted Google URL)
+    tmp.replace(dest)
+    return dest
+
+
+def ensure_mediapipe_model(
+    path: str | Path | None = None, *, allow_download: bool = True
+) -> Path | None:
+    """Resolve the Face Landmarker model, downloading it if missing.
+
+    Returns ``None`` (a no-op) when the model is not needed — i.e. the installed MediaPipe
+    has ``mp.solutions`` (model bundled). Otherwise returns the resolved path, downloading
+    to ``models/mediapipe/`` when absent. Set ``FACE_OCCLUSION_NO_DOWNLOAD`` (or pass
+    ``allow_download=False``) to disable the network fetch.
+    """
+    if not mediapipe_needs_model_asset():
+        return None
+    resolved = _resolve_mediapipe_model_asset_path(path)
+    if resolved is not None:
+        return resolved
+    if not allow_download or os.environ.get("FACE_OCCLUSION_NO_DOWNLOAD"):
+        return None
+    dest = DEFAULT_MEDIAPIPE_MODEL_DIR / "face_landmarker.task"
+    print(f"[mediapipe] face_landmarker.task not found; downloading to {dest} ...")
+    return download_mediapipe_model(dest)
 
 
 def _as_rgb_array(image: Image.Image | np.ndarray) -> np.ndarray:

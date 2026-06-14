@@ -81,6 +81,11 @@ outputs/slurm_logs/**
 tmp/
 
 
+# Model weights (downloaded; keep the README tracked for provenance)
+models/**/*.task
+models/**/*.tflite
+
+
 # Slurm logs
 *.out
 *.err

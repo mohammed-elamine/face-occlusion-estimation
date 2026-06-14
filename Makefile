@@ -4,7 +4,7 @@
 # Makefile – local dev commands for face-occlusion-estimation
 # -------------------------------------------------------------------
 
-.PHONY: help check-setup install setup-cluster lint format format-check pre-commit check clean
+.PHONY: help check-setup install setup-cluster lint format format-check pre-commit check mediapipe-model clean
 
 help: ## Show this help message
 	@printf '\nUsage: make <target>\n\n'
@@ -39,6 +39,11 @@ pre-commit: ## Run all pre-commit hooks on every file
 	uv run pre-commit run --all-files
 
 check: lint format-check ## Run all checks (lint + format)
+
+# -- Assets --------------------------------------------------------------
+
+mediapipe-model: ## Download the MediaPipe Face Landmarker model to models/mediapipe/
+	uv run python -m scripts.data.download_mediapipe_model
 
 # -- Cleanup -------------------------------------------------------------
 

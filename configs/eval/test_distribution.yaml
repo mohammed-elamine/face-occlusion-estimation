@@ -1,0 +1,12 @@
+# Approximate per-bin proportions of the TEST occlusion distribution, digitized by
+# eye from assets/challenge/Distribution-Train-vs-Test.png (test panel, 29,980 images).
+#
+# Used ONLY as an evaluation "lens": importance-reweighting the validation metric so we
+# can SEE how a model would score under the flatter test distribution. It is never used
+# for training or for model selection (selection stays on the official val/score).
+#
+# These numbers are approximate. Replace them if the organisers publish exact test bin
+# proportions, or re-digitize at finer resolution. `proportions` has one entry per
+# interval between consecutive `edges` and is renormalised to sum to 1 at load time.
+edges: [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.60, 1.0]
+proportions: [0.178, 0.140, 0.141, 0.138, 0.140, 0.105, 0.078, 0.048, 0.029, 0.0015, 0.0005]

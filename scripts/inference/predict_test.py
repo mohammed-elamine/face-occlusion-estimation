@@ -52,6 +52,15 @@ def main() -> None:
             "folder when possible."
         ),
     )
+    parser.add_argument(
+        "--recalibration",
+        default=None,
+        metavar="MAPPING_JSON",
+        help=(
+            "Optional post-hoc recalibration mapping (from fit_recalibration.py) applied "
+            "to raw predictions before clipping. Omit for no recalibration."
+        ),
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -66,7 +75,14 @@ def main() -> None:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     module = FaceOcclusionLitModule.load_from_checkpoint(args.checkpoint, cfg=cfg)
-    df = predict_dataframe(module.model, loader, device=device)
+
+    recalibration = None
+    if args.recalibration:
+        from face_occlusion.calibration import load_mapping
+
+        recalibration = load_mapping(args.recalibration)
+        print(f"[predict] Applying recalibration: {args.recalibration}")
+    df = predict_dataframe(module.model, loader, device=device, recalibration=recalibration)
 
     out_dir = (
         Path(args.output_dir) if args.output_dir else _default_output_dir(cfg, args.checkpoint)

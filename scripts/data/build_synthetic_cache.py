@@ -133,6 +133,11 @@ def main() -> None:
     gender_col = cfg.data.gender_col
     image_col = cfg.data.image_col
 
+    # Ensure the MediaPipe model is present (downloads to models/mediapipe/ if needed).
+    from face_occlusion.data.synthetic_occlusion import ensure_mediapipe_model
+
+    ensure_mediapipe_model()
+
     generator = _build_generator(cfg, args.seed)
     anchors = _prepare_train_anchors(cfg, args.target_min, args.target_max)
     if anchors.empty:

@@ -28,12 +28,17 @@ def _to_np(x) -> np.ndarray:
     return np.asarray(x, dtype=float)
 
 
-def weighted_mse(preds, targets, clip: bool = True) -> float:
+def weighted_mse(preds, targets, clip: bool = True, sample_weight=None) -> float:
     p = _to_np(preds).reshape(-1)
     t = _to_np(targets).reshape(-1).astype(float)
     if clip:
         p = np.clip(p, 0.0, 1.0)
     w = 1.0 / 30.0 + t
+    if sample_weight is not None:
+        # Optional per-row importance weight for evaluation "lenses" (e.g. matching the
+        # test distribution). It multiplies the challenge weight; passing None or an
+        # all-ones vector leaves the official metric unchanged.
+        w = w * _to_np(sample_weight).reshape(-1)
     denom = w.sum()
     if denom <= 0:
         return float("nan")
@@ -60,19 +65,31 @@ def challenge_score(
     female_value="0.0",
     male_value="1.0",
     clip: bool = True,
+    sample_weight=None,
 ) -> dict[str, float]:
     p = _to_np(preds).reshape(-1)
     t = _to_np(targets).reshape(-1)
     g = np.asarray(genders).astype(str).reshape(-1)
     female_value = str(female_value)
     male_value = str(male_value)
+    sw = _to_np(sample_weight).reshape(-1) if sample_weight is not None else None
 
     mask_f = g == female_value
     mask_m = g == male_value
 
     # Compute subgroup errors separately because the final metric penalizes imbalance.
-    err_f = weighted_mse(p[mask_f], t[mask_f], clip=clip) if mask_f.any() else float("nan")
-    err_m = weighted_mse(p[mask_m], t[mask_m], clip=clip) if mask_m.any() else float("nan")
+    sw_f = sw[mask_f] if sw is not None else None
+    sw_m = sw[mask_m] if sw is not None else None
+    err_f = (
+        weighted_mse(p[mask_f], t[mask_f], clip=clip, sample_weight=sw_f)
+        if mask_f.any()
+        else float("nan")
+    )
+    err_m = (
+        weighted_mse(p[mask_m], t[mask_m], clip=clip, sample_weight=sw_m)
+        if mask_m.any()
+        else float("nan")
+    )
 
     if np.isnan(err_f) or np.isnan(err_m):
         # If one subgroup is missing the score is ill-defined; fall back to overall WMSE.
@@ -81,7 +98,7 @@ def challenge_score(
             RuntimeWarning,
             stacklevel=2,
         )
-        overall = weighted_mse(p, t, clip=clip)
+        overall = weighted_mse(p, t, clip=clip, sample_weight=sw)
         return {
             "score": overall,
             "err_female": err_f,

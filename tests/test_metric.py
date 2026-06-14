@@ -94,3 +94,38 @@ def test_bins():
     bins = [0.0, 0.1, 0.6, 1.0]
     res = error_by_occlusion_bin(p, y, bins=bins)
     assert set(res.keys()) == {"0.00_0.10", "0.10_0.60", "0.60_1.00"}
+
+
+# ── Optional sample_weight (evaluation lenses) ─────────────────────────────────
+
+
+def test_sample_weight_none_is_unchanged():
+    rng = np.random.default_rng(3)
+    y = rng.beta(1.5, 8.0, size=300)
+    p = np.clip(y + rng.normal(0, 0.05, size=300), 0, 1)
+    g = rng.integers(0, 2, size=300).astype(float)
+    assert weighted_mse(p, y, sample_weight=None) == weighted_mse(p, y)
+    base = challenge_score(p, y, g)
+    none = challenge_score(p, y, g, sample_weight=None)
+    assert none["score"] == base["score"]
+
+
+def test_all_ones_weight_equals_unweighted():
+    rng = np.random.default_rng(4)
+    y = rng.beta(1.5, 8.0, size=300)
+    p = np.clip(y + rng.normal(0, 0.05, size=300), 0, 1)
+    g = rng.integers(0, 2, size=300).astype(float)
+    ones = np.ones_like(y)
+    assert weighted_mse(p, y, sample_weight=ones) == pytest.approx(weighted_mse(p, y))
+    assert challenge_score(p, y, g, sample_weight=ones)["score"] == pytest.approx(
+        challenge_score(p, y, g)["score"]
+    )
+
+
+def test_sample_weight_upweights_targeted_rows():
+    # Two rows; weighting the erroneous row more must raise the weighted error.
+    y = np.array([0.5, 0.5])
+    p = np.array([0.5, 0.0])  # second row is wrong
+    low = weighted_mse(p, y, clip=False, sample_weight=np.array([1.0, 1.0]))
+    high = weighted_mse(p, y, clip=False, sample_weight=np.array([1.0, 5.0]))
+    assert high > low

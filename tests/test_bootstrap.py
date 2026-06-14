@@ -88,3 +88,56 @@ def test_group_unit_requires_group_ids():
 def test_metric_ci_as_dict():
     ci = MetricCI(0.1, 0.05, 0.15, 0.02)
     assert ci.as_dict() == {"point": 0.1, "lo": 0.05, "hi": 0.15, "std": 0.02}
+
+
+# ── sample_weight, per-bin CIs, paired delta ───────────────────────────────────
+
+
+def test_sample_weight_none_matches_default():
+    from face_occlusion.metrics.bootstrap import bootstrap_challenge_metrics as bcm
+
+    preds, targets, genders, gids = _data()
+    a = bcm(preds, targets, genders, n_boot=50, seed=7)
+    b = bcm(preds, targets, genders, n_boot=50, seed=7, sample_weight=None)
+    assert a["score"].point == b["score"].point
+    assert a["score"].lo == b["score"].lo
+
+
+def test_bootstrap_per_bin_shares_sum_to_one():
+    from face_occlusion.metrics.bootstrap import bootstrap_per_bin
+
+    preds, targets, genders, gids = _data()
+    edges = [0.0, 0.05, 0.10, 0.20, 0.40, 1.0]
+    pb = bootstrap_per_bin(preds, targets, edges=edges, n_boot=50, seed=2)
+    assert len(pb) == len(edges) - 1
+    shares = [v["score_share"].point for v in pb.values() if np.isfinite(v["score_share"].point)]
+    assert sum(shares) == pytest.approx(1.0, abs=1e-9)
+    assert sum(v["count"] for v in pb.values()) == len(targets)
+    for v in pb.values():
+        assert isinstance(v["weighted_mse"], MetricCI)
+
+
+def test_paired_delta_self_is_zero():
+    from face_occlusion.metrics.bootstrap import bootstrap_score_delta
+
+    preds, targets, genders, gids = _data()
+    d = bootstrap_score_delta(
+        preds, preds, targets, genders, group_ids=gids, unit="group", n_boot=100, seed=3
+    )
+    assert d["score"].point == pytest.approx(0.0, abs=1e-12)
+    assert d["score"].lo == pytest.approx(0.0, abs=1e-12)
+    assert d["score"].hi == pytest.approx(0.0, abs=1e-12)
+
+
+def test_paired_delta_sign_matches_point_difference():
+    from face_occlusion.metrics.bootstrap import bootstrap_score_delta
+
+    preds, targets, genders, gids = _data()
+    worse = np.clip(preds + 0.1, 0, 1)  # uniformly worse predictions
+    d = bootstrap_score_delta(worse, preds, targets, genders, n_boot=50, seed=5)
+    direct = (
+        challenge_score(worse, targets, genders)["score"]
+        - challenge_score(preds, targets, genders)["score"]
+    )
+    assert d["score"].point == pytest.approx(direct)
+    assert d["score"].point > 0  # worse run scores higher

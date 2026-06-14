@@ -43,7 +43,17 @@ import pandas as pd
 import seaborn as sns
 from PIL import Image
 
+from face_occlusion.metrics.bootstrap import (
+    bootstrap_challenge_metrics,
+    bootstrap_per_bin,
+)
 from face_occlusion.metrics.challenge_metric import challenge_score, weighted_mse
+from face_occlusion.metrics.eval_lenses import (
+    LENS_NAMES,
+    balanced_proportions,
+    lens_weights,
+    load_test_distribution,
+)
 
 DEFAULT_BINS = [0.0, 0.05, 0.10, 0.20, 0.40, 0.60, 1.0]
 REQUIRED_COLUMNS = [
@@ -253,6 +263,190 @@ def _compute_summary_metrics(
         "predictions": str(pred_path),
         "split_csv": str(split_csv) if split_csv else None,
     }
+
+
+# ─── Robust evaluation: CIs, lenses, per-bin shares, leakage-free subset ───────
+#
+# Everything below is post-hoc on the saved predictions (no retraining). Selection
+# still uses the official val/score; these are reporting/diagnostic guardrails.
+
+ROBUST_METRIC_KEYS = (
+    "score",
+    "err_female",
+    "err_male",
+    "gender_gap",
+    "err_mean",
+    "high_occ_err",
+    "high_occ_gender_gap",
+)
+
+
+def _ci_dict(metric_ci) -> dict[str, float]:
+    return {
+        "point": metric_ci.point,
+        "lo": metric_ci.lo,
+        "hi": metric_ci.hi,
+        "std": metric_ci.std,
+    }
+
+
+def _bootstrap_block(df_sub: pd.DataFrame, *, unit: str, sample_weight=None, **kw) -> dict:
+    gids = df_sub["group_id"].to_numpy() if (unit == "group" and "group_id" in df_sub) else None
+    res = bootstrap_challenge_metrics(
+        df_sub["pred_clipped"].to_numpy(dtype=float),
+        df_sub["target"].to_numpy(dtype=float),
+        df_sub["gender"].to_numpy(),
+        group_ids=gids,
+        unit=unit if gids is not None else "row",
+        sample_weight=sample_weight,
+        **kw,
+    )
+    return {k: _ci_dict(res[k]) for k in ROBUST_METRIC_KEYS if k in res}
+
+
+def _compute_robust_metrics(
+    df: pd.DataFrame, bins: list[float], *, n_boot: int, ci: float, seed: int
+) -> dict[str, Any]:
+    """Bootstrap CIs (row + group), the three lenses, per-bin shares and the
+    leakage-free (unseen-identity) score — all from the saved predictions."""
+    has_groups = "group_id" in df.columns and df["group_id"].notna().any()
+    unit = "group" if has_groups else "row"
+    boot_kw = dict(n_boot=n_boot, ci=ci, seed=seed)
+    preds = df["pred_clipped"].to_numpy(dtype=float)
+    targets = df["target"].to_numpy(dtype=float)
+    genders = df["gender"].to_numpy()
+    gids = df["group_id"].to_numpy() if has_groups else None
+
+    out: dict[str, Any] = {"n_boot": int(n_boot), "ci_level": ci, "unit": unit}
+
+    # 1. CIs on the official metric, row + (when available) leakage-honest group unit.
+    ci_block = {"row": _bootstrap_block(df, unit="row", **boot_kw)}
+    if has_groups:
+        ci_block["group"] = _bootstrap_block(df, unit="group", **boot_kw)
+    out["ci"] = ci_block
+
+    # 2. The three evaluation lenses (diagnostic only; selection stays on official).
+    lenses: dict[str, Any] = {}
+    for name in LENS_NAMES:
+        sw = lens_weights(name, targets)
+        res = bootstrap_challenge_metrics(
+            preds, targets, genders, group_ids=gids, unit=unit, sample_weight=sw, **boot_kw
+        )
+        lenses[name] = {k: _ci_dict(res[k]) for k in ROBUST_METRIC_KEYS if k in res}
+    out["lenses"] = lenses
+
+    # 3. Per-bin contribution (count, weighted MSE CI, share-of-score CI).
+    pb = bootstrap_per_bin(preds, targets, edges=bins, group_ids=gids, unit=unit, **boot_kw)
+    out["per_bin"] = {
+        label: {
+            "count": v["count"],
+            "weighted_mse": _ci_dict(v["weighted_mse"]),
+            "score_share": _ci_dict(v["score_share"]),
+        }
+        for label, v in pb.items()
+    }
+
+    # 4. Leakage-free subset: identities not seen in train.
+    if "group_seen_status" in df.columns:
+        unseen = df[df["group_seen_status"] == "unseen_in_train"]
+        seen = df[df["group_seen_status"] == "seen_in_train"]
+        lf: dict[str, Any] = {"n_unseen": int(len(unseen)), "n_seen": int(len(seen))}
+        lf["full"] = ci_block.get("group", ci_block["row"])
+        if len(unseen) > 0:
+            lf["unseen"] = _bootstrap_block(unseen, unit=unit, **boot_kw)
+        if len(seen) > 0:
+            lf["seen"] = _bootstrap_block(seen, unit=unit, **boot_kw)
+        out["leakage_free"] = lf
+
+    # Context: train vs balanced vs test bin weights (for the distribution plot).
+    test_edges, test_props = load_test_distribution()
+    out["distributions"] = {
+        "edges": [float(e) for e in test_edges],
+        "test": [float(x) for x in test_props],
+        "balanced": [float(x) for x in balanced_proportions(len(test_edges) - 1)],
+    }
+    return out
+
+
+def _write_robust_tables(robust: dict[str, Any], df: pd.DataFrame, tables_dir: Path) -> None:
+    tables_dir.mkdir(parents=True, exist_ok=True)
+
+    # metrics_with_ci.csv — official metric, row vs group unit.
+    rows = []
+    for metric in ROBUST_METRIC_KEYS:
+        row = {"metric": metric}
+        for unit in ("row", "group"):
+            blk = robust["ci"].get(unit, {}).get(metric)
+            if blk:
+                row[f"{unit}_point"] = blk["point"]
+                row[f"{unit}_lo"] = blk["lo"]
+                row[f"{unit}_hi"] = blk["hi"]
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(tables_dir / "metrics_with_ci.csv", index=False)
+
+    # score_by_lens.csv — official / balanced / test_matched.
+    rows = []
+    for name, block in robust["lenses"].items():
+        row = {"lens": name}
+        for metric in ("score", "err_female", "err_male", "gender_gap", "high_occ_err"):
+            b = block.get(metric)
+            if b:
+                row[f"{metric}"] = b["point"]
+                row[f"{metric}_lo"] = b["lo"]
+                row[f"{metric}_hi"] = b["hi"]
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(tables_dir / "score_by_lens.csv", index=False)
+
+    # per_bin_contribution.csv — enriched with %rows, mean_w, bias from df.
+    total = len(df)
+    bin_extra = {}
+    if "occlusion_bin" in df.columns:
+        for label, g in df.groupby("occlusion_bin", observed=True):
+            w = 1.0 / 30.0 + g["target"].to_numpy(dtype=float)
+            bin_extra[str(label)] = {
+                "mean_w": float(w.mean()) if len(g) else float("nan"),
+                "bias": float((g["pred_clipped"] - g["target"]).mean()) if len(g) else float("nan"),
+            }
+    rows = []
+    for label, v in robust["per_bin"].items():
+        extra = bin_extra.get(label, {})
+        rows.append(
+            {
+                "occlusion_bin": label,
+                "count": v["count"],
+                "pct_rows": v["count"] / total if total else float("nan"),
+                "mean_w": extra.get("mean_w", float("nan")),
+                "bias": extra.get("bias", float("nan")),
+                "weighted_mse": v["weighted_mse"]["point"],
+                "weighted_mse_lo": v["weighted_mse"]["lo"],
+                "weighted_mse_hi": v["weighted_mse"]["hi"],
+                "score_share": v["score_share"]["point"],
+                "score_share_lo": v["score_share"]["lo"],
+                "score_share_hi": v["score_share"]["hi"],
+            }
+        )
+    pd.DataFrame(rows).to_csv(tables_dir / "per_bin_contribution.csv", index=False)
+
+    # leakage_free_summary.csv — full vs unseen vs seen.
+    lf = robust.get("leakage_free")
+    if lf:
+        rows = []
+        for subset in ("full", "unseen", "seen"):
+            blk = lf.get(subset)
+            if not blk:
+                continue
+            n = len(df) if subset == "full" else lf.get(f"n_{subset}", float("nan"))
+            rows.append(
+                {
+                    "subset": subset,
+                    "n_rows": n,
+                    "score": blk["score"]["point"],
+                    "score_lo": blk["score"]["lo"],
+                    "score_hi": blk["score"]["hi"],
+                }
+            )
+        if rows:
+            pd.DataFrame(rows).to_csv(tables_dir / "leakage_free_summary.csv", index=False)
 
 
 def _metrics_by(df: pd.DataFrame, group_cols: list[str]) -> pd.DataFrame:
@@ -660,6 +854,163 @@ def _plot_error_distribution(df: pd.DataFrame, path: Path) -> None:
     _save_plot(path)
 
 
+# ─── Robust evaluation plots ──────────────────────────────────────────────────
+
+
+def _asym_err(blocks: list[dict[str, float]]) -> np.ndarray:
+    """Asymmetric yerr (2xN) from a list of {point,lo,hi} dicts, NaN-safe."""
+    lo = [max(0.0, b["point"] - b["lo"]) if np.isfinite(b["lo"]) else 0.0 for b in blocks]
+    hi = [max(0.0, b["hi"] - b["point"]) if np.isfinite(b["hi"]) else 0.0 for b in blocks]
+    return np.array([lo, hi])
+
+
+def _plot_score_share_by_bin(robust: dict[str, Any], path: Path) -> None:
+    labels = list(robust["per_bin"].keys())
+    shares = [robust["per_bin"][b]["score_share"] for b in labels]
+    counts = [robust["per_bin"][b]["count"] for b in labels]
+    vals = [100.0 * s["point"] for s in shares]
+    yerr = 100.0 * _asym_err(shares)
+    fig, ax = plt.subplots(figsize=(11, 5))
+    ax.bar(labels, vals, color="#c44e52", width=0.6, yerr=yerr, capsize=3, ecolor="#555")
+    ax.set_title(
+        "Where the challenge score comes from\n"
+        "(% of total weighted error per occlusion bin, 95% CI)",
+        fontweight="bold",
+    )
+    ax.set_ylabel("% of score")
+    ax.set_xlabel("occlusion bin")
+    ax.tick_params(axis="x", rotation=20)
+    _annotate_bars(ax, vals, counts, fmt="{:.1f}%")
+    _save_plot(path)
+
+
+def _plot_weighted_error_by_bin_ci(robust: dict[str, Any], path: Path) -> None:
+    labels = list(robust["per_bin"].keys())
+    wmse = [robust["per_bin"][b]["weighted_mse"] for b in labels]
+    counts = [robust["per_bin"][b]["count"] for b in labels]
+    vals = [w["point"] for w in wmse]
+    yerr = _asym_err(wmse)
+    fig, ax = plt.subplots(figsize=(11, 5))
+    ax.bar(labels, vals, color="#4878cf", width=0.6, yerr=yerr, capsize=3, ecolor="#555")
+    ax.set_yscale("log")
+    ax.set_title("Weighted MSE per occlusion bin (log scale, 95% CI)", fontweight="bold")
+    ax.set_ylabel("weighted MSE")
+    ax.set_xlabel("occlusion bin")
+    ax.tick_params(axis="x", rotation=20)
+    _annotate_bars(ax, vals, counts, fmt="{:.4f}")
+    _save_plot(path)
+
+
+def _plot_score_by_lens(robust: dict[str, Any], path: Path) -> None:
+    names = [n for n in LENS_NAMES if n in robust["lenses"]]
+    blocks = [robust["lenses"][n]["score"] for n in names]
+    vals = [b["point"] for b in blocks]
+    yerr = _asym_err(blocks)
+    colors = {"official": "#2b6cb0", "balanced": "#6acc65", "test_matched": "#f6a623"}
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.bar(
+        names,
+        vals,
+        color=[colors.get(n, "#888") for n in names],
+        width=0.55,
+        yerr=yerr,
+        capsize=4,
+        ecolor="#555",
+    )
+    ax.set_title(
+        "Challenge score under three distribution lenses (95% CI)\n"
+        "diagnostic only — selection stays on 'official'",
+        fontweight="bold",
+    )
+    ax.set_ylabel("score")
+    _annotate_bars(ax, vals, fmt="{:.5f}")
+    _save_plot(path)
+
+
+def _plot_leakage_free(robust: dict[str, Any], path: Path) -> None:
+    lf = robust.get("leakage_free")
+    if not lf:
+        raise ValueError("no leakage_free block (split CSV missing)")
+    order = [s for s in ("full", "unseen", "seen") if s in lf]
+    blocks = [lf[s]["score"] for s in order]
+    vals = [b["point"] for b in blocks]
+    yerr = _asym_err(blocks)
+    n_full = int(lf.get("n_unseen", 0)) + int(lf.get("n_seen", 0))
+    counts = [n_full if s == "full" else int(lf.get(f"n_{s}", 0)) for s in order]
+    labels = [
+        {"full": "full val", "unseen": "unseen identities", "seen": "seen identities"}[s]
+        for s in order
+    ]
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.bar(
+        labels,
+        vals,
+        color=["#888", "#2ca02c", "#d62728"][: len(order)],
+        width=0.55,
+        yerr=yerr,
+        capsize=4,
+        ecolor="#555",
+    )
+    ax.set_title("Leakage-free vs full validation score (95% CI)", fontweight="bold")
+    ax.set_ylabel("score")
+    _annotate_bars(ax, vals, counts, fmt="{:.5f}")
+    _save_plot(path)
+
+
+def _plot_train_vs_target_distribution(
+    robust: dict[str, Any], df: pd.DataFrame, path: Path
+) -> None:
+    dist = robust.get("distributions")
+    if not dist:
+        raise ValueError("no distributions block")
+    edges = np.asarray(dist["edges"], dtype=float)
+    n_bins = len(edges) - 1
+    from face_occlusion.data.normalize import assign_occlusion_bin
+
+    train_idx = assign_occlusion_bin(df["target"].to_numpy(dtype=float), edges)
+    train = np.bincount(train_idx, minlength=n_bins).astype(float)
+    train = train / train.sum() if train.sum() > 0 else train
+    labels = [f"{edges[i]:.2f}_{edges[i + 1]:.2f}" for i in range(n_bins)]
+    x = np.arange(n_bins)
+    w = 0.27
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.bar(x - w, train, w, label="val (train-like)", color="#c44e52")
+    ax.bar(x, dist["balanced"], w, label="balanced", color="#6acc65")
+    ax.bar(x + w, dist["test"], w, label="test (digitised)", color="#f6a623")
+    ax.set_title(
+        "Occlusion distribution: our validation vs the lenses\n"
+        "(why test-matched re-weights mid-high bins up and the empty tail down)",
+        fontweight="bold",
+    )
+    ax.set_ylabel("proportion of rows")
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=20)
+    ax.legend()
+    _save_plot(path)
+
+
+def _write_robust_plots(robust: dict[str, Any], df: pd.DataFrame, plots_dir: Path) -> list[Path]:
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    sns.set_theme(style="whitegrid", context="notebook")
+    created: list[Path] = []
+
+    def _emit(filename: str, fn, *a) -> None:  # type: ignore[no-untyped-def]
+        p = plots_dir / filename
+        try:
+            fn(*a, p)
+            created.append(p)
+        except Exception as exc:
+            _warn(f"could not generate {filename}: {exc}")
+            plt.close("all")
+
+    _emit("16_score_share_by_bin.png", _plot_score_share_by_bin, robust)
+    _emit("17_score_by_lens_ci.png", _plot_score_by_lens, robust)
+    _emit("18_weighted_error_by_bin_ci.png", _plot_weighted_error_by_bin_ci, robust)
+    _emit("19_leakage_free_vs_leaky_ci.png", _plot_leakage_free, robust)
+    _emit("26_train_vs_target_distribution.png", _plot_train_vs_target_distribution, robust, df)
+    return created
+
+
 def _write_plots(df: pd.DataFrame, summary: dict[str, Any], plots_dir: Path) -> list[Path]:
     """Generate all diagnostic plots. Returns the list of created paths."""
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -1059,6 +1410,7 @@ def _write_html_report(
     tables_dir: Path,
     df: pd.DataFrame,
     dynamics_plots: list[Path] | None = None,
+    robust: dict[str, Any] | None = None,
 ) -> Path:
     report_path = output_dir / "report.html"
 
@@ -1153,6 +1505,56 @@ def _write_html_report(
     tables_html = (
         "\n".join(_tlink(p) for p in table_files) or "<li><em>No tables generated.</em></li>"
     )
+
+    # Robust evaluation section (uncertainty + lenses + leakage-free) ----------
+    def _cifmt(b: dict[str, float] | None) -> str:
+        if not b or not math.isfinite(float(b.get("point", float("nan")))):
+            return "N/A"
+        return f"{b['point']:.6f} [{b['lo']:.6f}, {b['hi']:.6f}]"
+
+    if robust:
+        lens_rows = "".join(
+            f"<tr><td style='{tds}'>{name}</td>"
+            f"<td style='{tds}'>{_cifmt(robust['lenses'][name].get('score'))}</td>"
+            f"<td style='{tds}'>{_cifmt(robust['lenses'][name].get('high_occ_err'))}</td></tr>"
+            for name in LENS_NAMES
+            if name in robust.get("lenses", {})
+        )
+        lens_table = (
+            f"<table style='{ts}'><thead><tr><th style='{ths}'>Lens</th>"
+            f"<th style='{ths}'>Score [95% CI]</th>"
+            f"<th style='{ths}'>High-occ err [95% CI]</th></tr></thead>"
+            f"<tbody>{lens_rows}</tbody></table>"
+        )
+        lf = robust.get("leakage_free") or {}
+        lf_note = ""
+        if "unseen" in lf:
+            lf_note = (
+                f"<p>Leakage-free score (unseen identities, n={lf.get('n_unseen')}): "
+                f"<strong>{_cifmt(lf['unseen'].get('score'))}</strong>"
+                f" &nbsp;vs full validation {_cifmt(lf.get('full', {}).get('score'))}.</p>"
+            )
+        robust_imgs = "\n".join(
+            _img(plots_dir / fname, cap)
+            for fname, cap in [
+                ("16_score_share_by_bin.png", "Where the score comes from (per-bin share)"),
+                ("17_score_by_lens_ci.png", "Score under official / balanced / test lenses"),
+                ("18_weighted_error_by_bin_ci.png", "Weighted MSE per occlusion bin (95% CI)"),
+                ("19_leakage_free_vs_leaky_ci.png", "Leakage-free vs full validation score"),
+                ("26_train_vs_target_distribution.png", "Validation vs lens distributions"),
+            ]
+        )
+        robust_section = (
+            "<h2>9b. Robust Evaluation (uncertainty &amp; lenses)</h2>"
+            f"<p>Bootstrap {robust.get('n_boot')} resamples, "
+            f"{int(float(robust.get('ci_level', 0.95)) * 100)}% CIs, resampling unit "
+            f"<code>{robust.get('unit')}</code>. Lenses are <strong>diagnostic only</strong> "
+            "&mdash; model selection stays on the official score.</p>"
+            f"{lens_table}{lf_note}"
+            f"<div class='plot-grid'>{robust_imgs}</div>"
+        )
+    else:
+        robust_section = ""
 
     exp_str = str(experiment_dir) if experiment_dir else "N/A"
     split_str = str(split_csv) if split_csv else "N/A"
@@ -1314,6 +1716,8 @@ def _write_html_report(
         <h2>9. Error Distribution</h2>
         {_img(plots_dir / "15_error_distribution.png", "Error distribution")}
 
+        {robust_section}
+
         <h2>10. Difficult Examples</h2>
         <div class="plot-grid">
           {samples_html}
@@ -1401,6 +1805,32 @@ def parse_args() -> argparse.Namespace:
         metavar="INT",
         help="Images per grid tile (default: 16)",
     )
+    parser.add_argument(
+        "--n-boot",
+        type=int,
+        default=1000,
+        metavar="INT",
+        help="Bootstrap resamples for CIs / lenses (default: 1000)",
+    )
+    parser.add_argument(
+        "--ci",
+        type=float,
+        default=0.95,
+        metavar="FLOAT",
+        help="Confidence level for bootstrap intervals (default: 0.95)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        metavar="INT",
+        help="Bootstrap RNG seed (default: 42)",
+    )
+    parser.add_argument(
+        "--no-bootstrap",
+        action="store_true",
+        help="Skip the robust evaluation (CIs, lenses, per-bin shares, leakage-free).",
+    )
     args = parser.parse_args()
     args.predictions, args.output_dir, args.split_csv = _resolve_paths(args, parser)
     if len(args.bins) < 2:
@@ -1438,6 +1868,14 @@ def main() -> None:
     summary = _compute_summary_metrics(df, pred_path, split_csv, top_k=args.top_k)
     summary["report_html"] = str(output_dir / "report.html")
 
+    robust: dict[str, Any] | None = None
+    if not args.no_bootstrap:
+        print(f"[analyze] Bootstrapping CIs / lenses (n_boot={args.n_boot})...")
+        robust = _compute_robust_metrics(
+            df, list(args.bins), n_boot=args.n_boot, ci=args.ci, seed=args.seed
+        )
+        summary["robust"] = robust
+
     (output_dir / "summary_metrics.json").write_text(
         json.dumps(_json_ready(summary), indent=2),
         encoding="utf-8",
@@ -1446,6 +1884,9 @@ def main() -> None:
     _write_tables(df, tables_dir)
     tables = _write_error_tables(df, tables_dir, top_k=args.top_k)
     _write_plots(df, summary, plots_dir)
+    if robust is not None:
+        _write_robust_tables(robust, df, tables_dir)
+        _write_robust_plots(robust, df, plots_dir)
 
     # Training dynamics from the Lightning CSV logger metrics file.
     dynamics_plots: list[Path] | None = None
@@ -1480,6 +1921,7 @@ def main() -> None:
         tables_dir=tables_dir,
         df=df,
         dynamics_plots=dynamics_plots,
+        robust=robust,
     )
 
     print(f"[analyze] Predictions:  {pred_path}")

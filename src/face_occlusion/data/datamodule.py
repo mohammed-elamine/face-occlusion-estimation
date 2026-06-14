@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 from ..utils.reproducibility import make_dataloader_generator, seed_worker
 from .background_augment import BackgroundAugment
 from .dataset import FaceOcclusionDataset
+from .face_mask_store import FaceMaskStore
 from .metadata import add_path_metadata
 from .samplers import build_batch_sampler_from_config
 from .splits import load_split, make_stratified_split, save_split
@@ -99,18 +100,31 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
                 synthetic_generator = build_generator_from_config(cfg)
 
         if want_bg:
-            if synthetic_cache is not None:
+            # Prefer the dedicated full-coverage face-mask store; fall back to the synthetic
+            # cache (limited coverage) only if the store dir is absent.
+            mask_dir = bg_cfg.get("mask_dir", "data/face_masks")
+            mask_lookup = None
+            mask_source = None
+            if mask_dir and Path(mask_dir).exists():
+                mask_lookup = FaceMaskStore(mask_dir).load_mask
+                mask_source = f"face-mask store '{mask_dir}'"
+            elif synthetic_cache is not None:
+                mask_lookup = synthetic_cache.load_mask
+                mask_source = "synthetic cache (fallback; only covers ranking anchors)"
+            if mask_lookup is not None:
                 background_augment = BackgroundAugment(
-                    mask_lookup=synthetic_cache.load_mask,
+                    mask_lookup=mask_lookup,
                     p=float(bg_cfg.get("p", 0.5)),
                     modes=tuple(bg_cfg.get("modes", ["replace", "brightness", "noise"])),
                     seed=int(bg_cfg.get("seed", synthetic_seed)),
                     noise_std=float(bg_cfg.get("noise_std", 25.0)),
                 )
+                print(f"[datamodule] Background augmentation: masks from {mask_source}")
             else:
                 print(
-                    "[datamodule] Warning: augmentation.background.enabled but no "
-                    "synthetic cache (set synthetic_occlusion.cache_dir); skipping."
+                    "[datamodule] Warning: augmentation.background.enabled but no face-mask "
+                    f"store at '{mask_dir}' (build with scripts.data.build_face_masks) and no "
+                    "synthetic cache; skipping background augmentation."
                 )
 
         if stage in (None, "fit", "validate"):

@@ -147,6 +147,9 @@ augmentation:
     p: 0.5
     modes: [replace, brightness, noise]
     noise_std: 25.0
+    # Full-coverage face masks from scripts.data.build_face_masks (one PNG per image,
+    # mirroring the image path). Falls back to the synthetic cache if this dir is absent.
+    mask_dir: data/face_masks
 
 logging:
   use_wandb: false

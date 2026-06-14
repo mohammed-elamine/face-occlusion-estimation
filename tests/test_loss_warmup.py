@@ -141,6 +141,9 @@ def _make_module(*, ord_weight: float, warmup_epochs: int, warmup_start: float =
     module._rank_weight = 0.0
     module._rank_warmup_epochs = 0
     module._rank_warmup_start_weight = 0.0
+    module._reg_reweight = "none"
+    module._reg_bin_weights = None
+    module._reg_edges = None
     return module
 
 
@@ -210,3 +213,78 @@ def test_lambda_ord_not_logged_when_ordinal_disabled():
     module.training_step(batch, 0)
     assert "train/lambda_ord" not in logs
     assert "train/lambda_cons" not in logs
+
+
+# ---------------------------------------------------------------------------
+# Distribution-aware regression reweighting (Intervention B)
+# ---------------------------------------------------------------------------
+
+import numpy as np  # noqa: E402
+
+from face_occlusion.metrics.eval_lenses import (  # noqa: E402
+    DEFAULT_LENS_EDGES,
+    balanced_proportions,
+    per_bin_importance_weights,
+)
+from face_occlusion.training.lit_module import weighted_mse_loss  # noqa: E402
+
+
+def test_weighted_mse_loss_sample_weight_none_is_identity():
+    p = torch.tensor([0.1, 0.5, 0.9])
+    t = torch.tensor([0.2, 0.4, 0.8])
+    assert float(weighted_mse_loss(p, t)) == float(weighted_mse_loss(p, t, sample_weight=None))
+    ones = torch.ones(3)
+    base = float(weighted_mse_loss(p, t))
+    with_ones = float(weighted_mse_loss(p, t, sample_weight=ones))
+    assert abs(base - with_ones) < 1e-9
+
+
+def _make_reweight_module(reweight: str, *, warmup_epochs: int = 0):
+    module = FaceOcclusionLitModule.__new__(FaceOcclusionLitModule)
+    pl.LightningModule.__init__(module)
+    module._reg_reweight = reweight
+    module._reg_weight = 1.0
+    module._reg_warmup_epochs = warmup_epochs
+    module._reg_warmup_start_weight = 0.0
+    module._reg_edges = np.asarray(DEFAULT_LENS_EDGES, dtype=float)
+    if reweight == "none":
+        module._reg_bin_weights = None
+    else:
+        # Right-skewed train distribution -> tail bins get up-weighted.
+        rng = np.random.default_rng(0)
+        train = np.clip(rng.beta(1.5, 8.0, 5000), 0, 1)
+        n_bins = len(DEFAULT_LENS_EDGES) - 1
+        bw = per_bin_importance_weights(train, balanced_proportions(n_bins), DEFAULT_LENS_EDGES)
+        module.register_buffer("_reg_bin_weights", torch.tensor(bw, dtype=torch.float32))
+
+    class _FakeTrainer:
+        current_epoch = 0
+
+    module._trainer = _FakeTrainer()  # type: ignore[attr-defined]
+    return module
+
+
+def test_reweight_none_yields_no_sample_weight():
+    module = _make_reweight_module("none")
+    assert module._regression_sample_weight(torch.rand(16)) is None
+
+
+def test_reweight_balanced_upweights_tail_rows():
+    module = _make_reweight_module("balanced")
+    targets = torch.tensor([0.01, 0.02, 0.03, 0.7, 0.8])  # 3 easy, 2 tail
+    sw = module._regression_sample_weight(targets)
+    assert sw is not None
+    assert float(sw[3:].mean()) > float(sw[:3].mean())  # tail weighted more
+    assert abs(float(sw.mean()) - 1.0) < 1e-5  # renormalised to mean 1
+
+
+def test_reweight_warmup_blends_toward_official():
+    # With warmup active at epoch 0, lambda<1 so weights are pulled toward all-ones.
+    warm = _make_reweight_module("balanced", warmup_epochs=4)
+    full = _make_reweight_module("balanced", warmup_epochs=0)
+    targets = torch.tensor([0.01, 0.02, 0.7, 0.8])
+    sw_warm = warm._regression_sample_weight(targets)
+    sw_full = full._regression_sample_weight(targets)
+    spread_warm = float(sw_warm.max() - sw_warm.min())
+    spread_full = float(sw_full.max() - sw_full.min())
+    assert spread_warm < spread_full  # warmup compresses the reweighting

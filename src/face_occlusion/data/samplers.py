@@ -31,7 +31,6 @@ logger = logging.getLogger(__name__)
 
 
 _GENDER_LABELS = {0: "female", 1: "male"}
-_TINY_STRATUM_POLICIES = ("cap", "warn")
 
 # Softer defaults than the historical schema. These are intentionally gentle: the
 # sampler should not solve high-occlusion rarity alone -- later synthetic
@@ -59,8 +58,14 @@ def _validate_bins(bins: Sequence[float]) -> None:
 
 
 def _validate_genders(genders: np.ndarray) -> None:
+    if np.isnan(genders).any():
+        raise ValueError(
+            "Genders contain NaN values; expected only 0 (female) and 1 (male). "
+            "Check for missing gender labels after a merge/join."
+        )
     unique = np.unique(genders)
-    invalid = [g for g in unique if int(g) not in _GENDER_LABELS]
+    # Exact membership, not int() truncation: a value like 0.9 must NOT pass as female.
+    invalid = [float(g) for g in unique if not (np.isclose(g, 0.0) or np.isclose(g, 1.0))]
     if invalid:
         raise ValueError(
             f"Genders contain invalid values {invalid}; expected only 0 (female) and 1 (male)"
@@ -106,9 +111,8 @@ class GenderOcclusionBalancedBatchSampler(Sampler[list[int]]):
         size_aware_weighting: bool = True,
         reliable_stratum_size: int = 20,
         max_repeats_per_image: int = 10,
-        tiny_stratum_policy: str = "cap",
         num_samples: int | None = None,
-        drop_last: bool = False,
+        drop_last: bool = True,
         seed: int = 42,
     ) -> None:
         super().__init__(None)
@@ -125,11 +129,6 @@ class GenderOcclusionBalancedBatchSampler(Sampler[list[int]]):
             raise ValueError("`reliable_stratum_size` must be positive")
         if max_repeats_per_image <= 0:
             raise ValueError("`max_repeats_per_image` must be positive")
-        if tiny_stratum_policy not in _TINY_STRATUM_POLICIES:
-            raise ValueError(
-                f"`tiny_stratum_policy` must be one of {_TINY_STRATUM_POLICIES}, "
-                f"got {tiny_stratum_policy!r}"
-            )
 
         _validate_bins(bins)
         targets = np.asarray(targets, dtype=float).reshape(-1)
@@ -148,10 +147,11 @@ class GenderOcclusionBalancedBatchSampler(Sampler[list[int]]):
         self.size_aware_weighting = bool(size_aware_weighting)
         self.reliable_stratum_size = int(reliable_stratum_size)
         self.max_repeats_per_image = int(max_repeats_per_image)
-        self.tiny_stratum_policy = str(tiny_stratum_policy)
         self.drop_last = bool(drop_last)
         self.seed = int(seed)
-        self._rng = np.random.default_rng(self.seed)
+        # Per-epoch RNG is derived from (seed, epoch) in __iter__ so the order is
+        # reproducible on resume and depends on the epoch index, not the call count.
+        self._epoch = 0
 
         n_total = int(targets.shape[0])
         self.num_samples_requested = int(num_samples) if num_samples is not None else n_total
@@ -177,6 +177,23 @@ class GenderOcclusionBalancedBatchSampler(Sampler[list[int]]):
         if not self._stratum_keys:
             raise ValueError("No non-empty strata found; cannot build sampler")
 
+        # A non-empty bin_weights dict that omits a present bin silently falls back to
+        # weight 1.0 for it; surface that so a typo / wrong bin scheme is not invisible.
+        missing_labels = sorted(
+            {
+                _bin_label(self.bins, b)
+                for (_, b) in self._stratum_keys
+                if _bin_label(self.bins, b) not in self.bin_weights
+            }
+        )
+        if self.bin_weights and missing_labels:
+            warnings.warn(
+                f"`bin_weights` has no entry for occupied bins {missing_labels}; "
+                "using weight 1.0 for them. Check that `bin_weights` matches `bins`.",
+                UserWarning,
+                stacklevel=2,
+            )
+
         # Compute weights and probabilities.
         natural = np.array([len(self._strata[k]) for k in self._stratum_keys], dtype=float)
         natural_prob = natural / natural.sum()
@@ -199,6 +216,15 @@ class GenderOcclusionBalancedBatchSampler(Sampler[list[int]]):
             raw_weights[i] = a_raw
             effective_weights[i] = a_clip
 
+        # Guard against a degenerate weighting (e.g. a 0.0/negative `bin_weights` entry, or
+        # size-aware damping driving every weight to 0): otherwise `balanced_prob` becomes
+        # NaN and silently shrinks the epoch instead of failing loudly.
+        if not np.all(np.isfinite(effective_weights)) or effective_weights.sum() <= 0:
+            raise ValueError(
+                "Computed non-positive or non-finite stratum weights; check `bin_weights` "
+                "for a 0.0/negative entry. Every effective bin weight must be positive."
+            )
+
         # Per-stratum (not per-image) balanced probability: tiny strata can be
         # boosted, and the repeat cap below prevents that boost from turning
         # into pathological over-exposure of a handful of images.
@@ -208,17 +234,11 @@ class GenderOcclusionBalancedBatchSampler(Sampler[list[int]]):
         final_prob = (1.0 - alpha) * natural_prob + alpha * balanced_prob
         final_prob = final_prob / final_prob.sum()
 
-        # Cap per-stratum draws by ``n_s * max_repeats_per_image``.
+        # Hard per-stratum cap: ``n_s * max_repeats_per_image``. This bounds how often any
+        # image (hence identity) can repeat, the memorization guard for the rare tail.
         caps = (natural * self.max_repeats_per_image).astype(int)
-        if self.tiny_stratum_policy == "warn":
-            effective_caps = np.full_like(caps, fill_value=10 * self.num_samples_requested)
-        else:
-            effective_caps = caps
-
         desired = final_prob * float(self.num_samples_requested)
-        draws_int, leftover = _allocate_with_caps(
-            final_prob, effective_caps, self.num_samples_requested
-        )
+        draws_int, leftover = _allocate_with_caps(final_prob, caps, self.num_samples_requested)
         if leftover > 0:
             warnings.warn(
                 f"Sampler could not place {leftover} samples this epoch: every "
@@ -256,7 +276,16 @@ class GenderOcclusionBalancedBatchSampler(Sampler[list[int]]):
             return n // self.batch_size
         return (n + self.batch_size - 1) // self.batch_size
 
+    def set_epoch(self, epoch: int) -> None:
+        """Set the epoch used to derive the shuffle RNG (for reproducible resume)."""
+        self._epoch = int(epoch)
+
     def __iter__(self) -> Iterator[list[int]]:
+        # Reproducible per-epoch RNG: depends on the epoch index, not how many times
+        # __iter__ was called. Auto-advances if the caller does not use set_epoch.
+        rng = np.random.default_rng([self.seed, self._epoch])
+        self._epoch += 1
+
         pool: list[int] = []
         for key, count in self._draws_per_stratum.items():
             if count <= 0:
@@ -265,14 +294,14 @@ class GenderOcclusionBalancedBatchSampler(Sampler[list[int]]):
             n_s = len(idxs)
             # Repeat each image at most ``max_repeats_per_image`` times, shuffle,
             # then take ``count``. ``count`` <= n_s * max_repeats_per_image by
-            # construction so this slice always succeeds.
+            # construction (the hard cap above) so this slice always succeeds.
             reps = min(self.max_repeats_per_image, int(np.ceil(count / max(n_s, 1))))
             repeated = np.tile(idxs, reps)
-            self._rng.shuffle(repeated)
+            rng.shuffle(repeated)
             pool.extend(int(x) for x in repeated[:count])
 
         pool_arr = np.asarray(pool, dtype=int)
-        self._rng.shuffle(pool_arr)
+        rng.shuffle(pool_arr)
 
         n = len(pool_arr)
         bs = self.batch_size
@@ -338,7 +367,6 @@ class GenderOcclusionBalancedBatchSampler(Sampler[list[int]]):
             "size_aware_weighting": self.size_aware_weighting,
             "reliable_stratum_size": self.reliable_stratum_size,
             "max_repeats_per_image": self.max_repeats_per_image,
-            "tiny_stratum_policy": self.tiny_stratum_policy,
             "min_stratum_size": self.min_stratum_size,
             "bins": list(self.bins),
             "bin_weights": dict(self.bin_weights),
@@ -505,8 +533,27 @@ def build_batch_sampler_from_config(
     if strategy != "gender_occlusion_balanced_batch":
         raise ValueError(f"Unknown sampler strategy: {strategy!r}")
 
-    bins = _get("bins", [0.0, 0.05, 0.10, 0.20, 0.40, 0.60, 1.0])
-    bin_weights = _get("bin_weights", _DEFAULT_BIN_WEIGHTS)
+    # Bins default to the split's occlusion bins so strata always match the split's
+    # stratification; warn if the sampler is given a different set.
+    split_cfg = cfg.get("split", {}) if hasattr(cfg, "get") else getattr(cfg, "split", {})
+
+    def _split_get(key: str, default: Any) -> Any:
+        if hasattr(split_cfg, "get"):
+            return split_cfg.get(key, default)
+        return getattr(split_cfg, key, default)
+
+    split_bins = _split_get("occlusion_bins", None)
+    default_bins = (
+        list(split_bins) if split_bins is not None else [0.0, 0.05, 0.10, 0.20, 0.40, 0.60, 1.0]
+    )
+    bins = _get("bins", default_bins)
+    if split_bins is not None and [float(x) for x in bins] != [float(x) for x in split_bins]:
+        warnings.warn(
+            "sampler.bins differ from split.occlusion_bins; the sampler's strata will not "
+            "match the split's stratification. Align them unless this is intentional.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     # Column names come from the dataset config (cfg.data.*). The sampler block
     # may override them via ``sampler.target_col`` / ``sampler.gender_col`` for
@@ -518,7 +565,7 @@ def build_batch_sampler_from_config(
             return data_cfg.get(key, default)
         return getattr(data_cfg, key, default)
 
-    target_col = str(_get("target_col", _data_get("target_col", "face_occluded")))
+    target_col = str(_get("target_col", _data_get("target_col", "FaceOcclusion")))
     gender_col = str(_get("gender_col", _data_get("gender_col", "gender")))
     target_scale = str(_get("target_scale", _data_get("target_scale", "auto")))
 
@@ -537,6 +584,12 @@ def build_batch_sampler_from_config(
     targets = np.asarray(normalize_target(df[target_col], target_scale), dtype=float)
     genders = df[gender_col].to_numpy(dtype=float)
 
+    # Resolve the per-bin weighting. ``target: bin_weights`` uses the configured dict;
+    # ``balanced`` / ``test_matched`` reuse the eval-lens operator so the sampler targets the
+    # SAME distribution the loss reweighting and the evaluation lenses use.
+    target = str(_get("target", "bin_weights"))
+    bin_weights = _resolve_bin_weights(target, _get, targets, bins)
+
     return GenderOcclusionBalancedBatchSampler(
         targets=targets,
         genders=genders,
@@ -550,8 +603,41 @@ def build_batch_sampler_from_config(
         size_aware_weighting=bool(_get("size_aware_weighting", True)),
         reliable_stratum_size=int(_get("reliable_stratum_size", 20)),
         max_repeats_per_image=int(_get("max_repeats_per_image", 10)),
-        tiny_stratum_policy=str(_get("tiny_stratum_policy", "cap")),
         num_samples=_get("num_samples", None),
-        drop_last=bool(_get("drop_last", False)),
+        drop_last=bool(_get("drop_last", True)),
         seed=int(_get("seed", 42)),
     )
+
+
+def _resolve_bin_weights(target, getter, targets: np.ndarray, bins: Sequence[float]) -> dict:
+    """Per-bin weights for the sampler: configured dict, or a lens distribution.
+
+    ``balanced`` / ``test_matched`` build the weights from
+    :func:`~face_occlusion.metrics.eval_lenses.per_bin_importance_weights` on the sampler's
+    own ``bins``, so the data-level sampler, the loss-level reweighting and the
+    measurement-level lenses all share one definition of the target distribution.
+    """
+    if target == "bin_weights":
+        return getter("bin_weights", _DEFAULT_BIN_WEIGHTS)
+    from ..metrics.eval_lenses import (
+        balanced_proportions,
+        load_test_distribution,
+        per_bin_importance_weights,
+        rebin_proportions,
+    )
+
+    n_bins = len(bins) - 1
+    if target == "balanced":
+        target_props = balanced_proportions(n_bins)
+    elif target == "test_matched":
+        src_edges, src_props = load_test_distribution()
+        target_props = rebin_proportions(src_edges, src_props, bins)
+    else:
+        raise ValueError(
+            f"Unknown sampler.target {target!r}; expected 'bin_weights', 'balanced', "
+            "or 'test_matched'"
+        )
+    weights = per_bin_importance_weights(
+        targets, target_props, bins, clip_max=float(getter("clip_max", 10.0))
+    )
+    return {_bin_label(bins, i): float(weights[i]) for i in range(n_bins)}

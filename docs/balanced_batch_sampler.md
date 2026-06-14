@@ -95,8 +95,9 @@ sampler:
   size_aware_weighting: true     # damp boosts of small strata toward 1
   reliable_stratum_size: 20      # size at which a stratum is considered "reliable"
   max_repeats_per_image: 10      # hard per-image cap (key safety knob)
-  tiny_stratum_policy: cap       # "cap" enforces the repeat cap; "warn" only warns
-  drop_last: false
+  target: bin_weights            # bin_weights | balanced | test_matched (lens-targeting)
+  clip_max: 10.0                 # cap on lens importance weights (balanced/test_matched)
+  drop_last: true                # match the non-sampler loader for ablation equivalence
   num_samples: null              # null = len(train_dataset)
   seed: 42
 ```
@@ -112,9 +113,10 @@ sampler:
 | `min_stratum_size` | Emits a warning when a stratum is smaller than this but still drawn. |
 | `size_aware_weighting` | Shrinks weights of small strata toward 1 to avoid noisy estimates. |
 | `reliable_stratum_size` | Size at which a stratum gets its full boost. |
-| `max_repeats_per_image` | Hard upper bound on how many times any single image can appear per epoch. |
-| `tiny_stratum_policy` | `cap` (default) enforces the repeat cap; `warn` keeps the legacy unbounded behavior with explicit warnings. |
-| `drop_last` | If `true`, drop the trailing partial batch. |
+| `max_repeats_per_image` | Hard upper bound on how many times any single image can appear per epoch (the memorization guard; always enforced). |
+| `target` | Per-bin weighting source: `bin_weights` (the configured dict) or `balanced` / `test_matched`, which reuse the eval-lens operator (`per_bin_importance_weights`) so the sampler targets the **same** distribution as the loss reweighting and the evaluation lenses. |
+| `clip_max` | Cap on the lens importance weights when `target` is `balanced` / `test_matched`. |
+| `drop_last` | Drop the trailing partial batch. Defaults to `true` to match the non-sampler loader, keeping sampler-on vs sampler-off ablations equivalent. |
 | `num_samples` | Target epoch length before capping. `null` uses dataset size. |
 | `seed` | RNG seed for reproducibility. |
 

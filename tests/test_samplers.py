@@ -487,3 +487,144 @@ class TestBuildFromConfig:
         cfg = self._cfg()
         cfg["sampler"]["enabled"] = False
         assert build_batch_sampler_from_config(df, cfg, batch_size=2) is None
+
+
+class TestCorrectnessFixes:
+    """Regression tests for the bugs found in code review."""
+
+    def test_drop_last_defaults_true(self):
+        targets, genders = _make_imbalanced_dataset(100)
+        sampler = GenderOcclusionBalancedBatchSampler(
+            targets=targets, genders=genders, batch_size=16, bins=BINS, bin_weights=BIN_WEIGHTS
+        )
+        assert sampler.drop_last is True
+        assert len(list(sampler)) == sampler.num_samples_actual // 16
+
+    def test_pool_size_equals_num_samples_actual(self):
+        # No silent truncation: with the 'warn' policy removed, every allocated draw lands.
+        targets, genders = _make_imbalanced_dataset(500)
+        sampler = GenderOcclusionBalancedBatchSampler(
+            targets=targets,
+            genders=genders,
+            batch_size=16,
+            bins=BINS,
+            bin_weights=BIN_WEIGHTS,
+            balance_strength=1.0,
+            drop_last=False,
+        )
+        pool = [i for batch in sampler for i in batch]
+        assert len(pool) == sampler.num_samples_actual
+
+    def test_zero_bin_weights_raises(self):
+        targets, genders = _make_imbalanced_dataset(200)
+        zero_w = {k: 0.0 for k in BIN_WEIGHTS}
+        with pytest.raises(ValueError, match="non-positive or non-finite"):
+            GenderOcclusionBalancedBatchSampler(
+                targets=targets,
+                genders=genders,
+                batch_size=16,
+                bins=BINS,
+                bin_weights=zero_w,
+                size_aware_weighting=False,
+            )
+
+    def test_nan_gender_raises(self):
+        with pytest.raises(ValueError, match="NaN"):
+            GenderOcclusionBalancedBatchSampler(
+                targets=np.array([0.1, 0.2]),
+                genders=np.array([0.0, np.nan]),
+                batch_size=1,
+                bins=BINS,
+                bin_weights=BIN_WEIGHTS,
+            )
+
+    def test_non_binary_gender_raises(self):
+        # 0.9 must NOT pass as female via int() truncation.
+        with pytest.raises(ValueError, match="invalid values"):
+            GenderOcclusionBalancedBatchSampler(
+                targets=np.array([0.1, 0.2]),
+                genders=np.array([0.0, 0.9]),
+                batch_size=1,
+                bins=BINS,
+                bin_weights=BIN_WEIGHTS,
+            )
+
+    def test_set_epoch_reproducible_and_varies(self):
+        targets, genders = _make_imbalanced_dataset(200)
+        kw = dict(
+            targets=targets,
+            genders=genders,
+            batch_size=16,
+            bins=BINS,
+            bin_weights=BIN_WEIGHTS,
+            seed=7,
+        )
+        s1 = GenderOcclusionBalancedBatchSampler(**kw)
+        s1.set_epoch(3)
+        a = list(s1)
+        s2 = GenderOcclusionBalancedBatchSampler(**kw)
+        s2.set_epoch(3)
+        b = list(s2)
+        assert a == b  # same epoch index -> identical order across fresh instances
+        s3 = GenderOcclusionBalancedBatchSampler(**kw)
+        s3.set_epoch(4)
+        assert a != list(s3)  # different epoch -> different order
+
+
+class TestLensTargetingAndSplitBins:
+    """Factory lens-targeting + bins-from-split."""
+
+    def _df(self, n=400):
+        import pandas as pd
+
+        targets, genders = _make_imbalanced_dataset(n)
+        return pd.DataFrame({"FaceOcclusion": targets, "gender": genders})
+
+    def _cfg(self, **sampler):
+        block = {"enabled": True, "strategy": "gender_occlusion_balanced_batch", **sampler}
+        return {
+            "data": {"target_col": "FaceOcclusion", "gender_col": "gender"},
+            "split": {"occlusion_bins": BINS},
+            "sampler": block,
+        }
+
+    def test_target_balanced_upweights_rare_bins(self):
+        from face_occlusion.data.samplers import build_batch_sampler_from_config
+
+        s = build_batch_sampler_from_config(self._df(), self._cfg(target="balanced"), batch_size=32)
+        assert s.bin_weights["0.40_0.60"] > s.bin_weights["0.00_0.05"]
+
+    def test_test_matched_deemphasizes_extreme_tail(self):
+        from face_occlusion.data.samplers import build_batch_sampler_from_config
+
+        df = self._df()
+        s_bal = build_batch_sampler_from_config(df, self._cfg(target="balanced"), batch_size=32)
+        s_test = build_batch_sampler_from_config(
+            df, self._cfg(target="test_matched"), batch_size=32
+        )
+        # The digitised test distribution has ~no mass >= 0.6, so test_matched weights the
+        # extreme bin no more than balanced (objective-aligned: don't chase the empty tail).
+        assert s_test.bin_weights["0.60_1.00"] <= s_bal.bin_weights["0.60_1.00"] + 1e-9
+
+    def test_bins_default_to_split_occlusion_bins(self):
+        from face_occlusion.data.samplers import build_batch_sampler_from_config
+
+        s = build_batch_sampler_from_config(self._df(), self._cfg(target="balanced"), batch_size=32)
+        assert s.bins == [float(x) for x in BINS]
+
+    def test_bins_mismatch_with_split_warns(self):
+        from face_occlusion.data.samplers import build_batch_sampler_from_config
+
+        cfg = self._cfg(
+            target="bin_weights",
+            bins=[0.0, 0.5, 1.0],
+            bin_weights={"0.00_0.50": 1.0, "0.50_1.00": 2.0},
+        )
+        with pytest.warns(UserWarning, match="differ from split"):
+            build_batch_sampler_from_config(self._df(), cfg, batch_size=32)
+
+    def test_unknown_target_raises(self):
+        from face_occlusion.data.samplers import build_batch_sampler_from_config
+
+        with pytest.raises(ValueError, match="Unknown sampler.target"):
+            build_batch_sampler_from_config(self._df(), self._cfg(target="nonsense"), batch_size=32)

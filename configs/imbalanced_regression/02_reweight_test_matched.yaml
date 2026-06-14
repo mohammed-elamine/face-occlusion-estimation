@@ -1,0 +1,121 @@
+# Imbalanced-regression group — SECONDARY/diagnostic: reweighting toward the digitised
+# TEST distribution. Tighter leaderboard alignment but reintroduces the generalization
+# risk we kept out of selection on the eval side. NOT a selection target — compare only.
+project:
+  name: face-occlusion-estimation
+  seed: 42
+  output_dir: outputs
+  deterministic: false
+experiment:
+  name: imbreg_02_reweight_test_matched
+  output_root: outputs/experiments
+  save_git_info: true
+  save_config: true
+  create_latest_pointer: true
+data:
+  train_csv: data/raw/occlusion_datasets/train.csv
+  test_csv: data/raw/occlusion_datasets/test_students.csv
+  image_root: data/raw/crops/Crop_224_5fp_100K
+  image_col: filename
+  target_col: FaceOcclusion
+  gender_col: gender
+  id_col: filename
+  female_value: 0.0
+  male_value: 1.0
+  submission_dummy_gender: 0
+  target_scale: auto
+  val_size: 0.2
+  num_workers: 4
+split:
+  strategy: row_stratified
+  occlusion_bins: [0.0, 0.05, 0.1, 0.2, 0.4, 0.6, 1.0]
+  split_path: outputs/splits/canonical_row_split.csv
+  val_size: 0.2
+  random_state: 42
+  stratify_by: [gender, occlusion_bin, database]
+  group_col: group_id
+  allow_missing_rows: false
+model:
+  backbone: convnext_small.fb_in22k_ft_in1k
+  pretrained: true
+  output_activation: identity
+  dropout: 0.0
+  use_ordinal_head: false
+  use_projection_head: false
+  ordinal_thresholds: [0.05, 0.1, 0.2, 0.4, 0.6]
+losses:
+  regression:
+    reweight: test_matched        # none | balanced | test_matched
+    weight: 1.0
+    warmup_epochs: 2
+    warmup_start_weight: 0.0
+    clip_max: 10.0
+  ordinal:
+    enabled: false
+    weight: 0.2
+    warmup_epochs: 0
+    warmup_start_weight: 0.0
+    threshold_weights: [1.0, 1.0, 1.2, 2.0, 3.0]
+  consistency:
+    enabled: false
+    weight: 0.05
+    warmup_epochs: 0
+    warmup_start_weight: 0.0
+    temperature: 0.05
+    mode: symmetric
+  monotonicity:
+    enabled: false
+    weight: 0.01
+    warmup_epochs: 0
+    warmup_start_weight: 0.0
+  ranking:
+    enabled: false
+    weight: 0.1
+    warmup_epochs: 2
+    warmup_start_weight: 0.0
+  triplet:
+    enabled: false
+synthetic_occlusion:
+  enabled: false
+  return_in_batch: false
+  use_cache: true
+  cache_dir: data/synthetic_cache/v1
+triplet_sampling:
+  enabled: false
+training:
+  batch_size: 64
+  max_epochs: 20
+  learning_rate: 7.5e-05
+  weight_decay: 0.03
+  loss: weighted_mse
+  optimizer: adamw
+  scheduler: cosine
+  precision: 16-mixed
+  float32_matmul_precision: high
+  gradient_clip_val: 1.0
+  early_stopping_patience: 5
+augmentation:
+  resize: 224
+  horizontal_flip_p: 0.5
+  color_jitter_p: 0.5
+  brightness: 0.1
+  contrast: 0.1
+  saturation: 0.05
+  rotation_degrees: 3
+  background:
+    enabled: false
+logging:
+  use_wandb: false
+  wandb_project: face-occlusion-estimation
+  run_name: imbreg_02_reweight_test_matched
+  log_images: true
+  log_prediction_plots: true
+  log_images_every_n_epochs: 1
+  num_logged_images: 16
+sampler:
+  enabled: false
+checkpoint:
+  monitor: val/score
+  mode: min
+  save_top_k: 1
+  filename: best

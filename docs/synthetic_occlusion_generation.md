@@ -217,14 +217,17 @@ synthetic_occlusion:
 
 Ready-made configs live under `configs/synthetic_ranking/`: `01` (geometric),
 `02` (masks), `03` (hands), `04` (masks + hands). MediaPipe is the optional
-`synthetic` dependency group; it requires a Face Landmarker `.task` asset (the
-provider searches `tmp/mediapipe/`, `assets/mediapipe/`, `data/mediapipe/`, or
-`$FACE_OCCLUSION_MEDIAPIPE_FACE_LANDMARKER`):
+`synthetic` dependency group. When the installed MediaPipe lacks `mp.solutions`
+(the Tasks backend), it needs a Face Landmarker `.task` asset; the provider
+searches `$FACE_OCCLUSION_MEDIAPIPE_FACE_LANDMARKER`, then `models/mediapipe/`,
+`assets/mediapipe/`, `data/mediapipe/`. Get it once:
 
 ```bash
-curl -L -o tmp/mediapipe/face_landmarker.task \
-  https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task
+make mediapipe-model        # downloads to models/mediapipe/
 ```
+
+The cache/mask builders (`build_synthetic_cache`, `build_face_masks`) also
+auto-download it to `models/mediapipe/` on demand.
 
 ## 12. Audits and the realism probe
 

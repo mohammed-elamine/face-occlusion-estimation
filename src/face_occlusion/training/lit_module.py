@@ -30,9 +30,15 @@ from ..models import (
 )
 
 
-def weighted_mse_loss(preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+def weighted_mse_loss(
+    preds: torch.Tensor, targets: torch.Tensor, sample_weight: torch.Tensor | None = None
+) -> torch.Tensor:
     # Per-sample weight w_i = 1/30 + y_i: hard (highly occluded) samples count more.
     weights = (1.0 / 30.0) + targets
+    if sample_weight is not None:
+        # Optional distribution-aware reweighting (Intervention B). ``None`` (default) keeps
+        # the loss byte-identical to the official metric.
+        weights = weights * sample_weight
     return (weights * (preds - targets) ** 2).sum() / weights.sum().clamp_min(1e-12)
 
 
@@ -117,9 +123,11 @@ def _per_threshold_prf(
 
 
 class FaceOcclusionLitModule(pl.LightningModule):
-    def __init__(self, cfg, mean_target: float | None = None) -> None:
+    def __init__(self, cfg, mean_target: float | None = None, train_targets=None) -> None:
         super().__init__()
-        self.save_hyperparameters(dict(cfg), ignore=[])
+        # ``train_targets`` is a numpy array used only to precompute reweighting; exclude it
+        # so Lightning's ``v == hp`` arg-introspection doesn't choke on an array truth value.
+        self.save_hyperparameters(dict(cfg), ignore=["train_targets"])
         self.cfg = cfg
         self.model = build_model(cfg, mean_target=mean_target)
         # Validation metrics need the whole epoch because the score is grouped by gender.
@@ -237,6 +245,60 @@ class FaceOcclusionLitModule(pl.LightningModule):
             current_epoch=0,
         )
 
+        # ── Distribution-aware regression reweighting (Intervention B) ────
+        # Optional per-sample importance reweighting of the regression loss toward a
+        # 'balanced' or 'test_matched' occlusion distribution. Reuses the SAME operator as
+        # the evaluation lenses so training and the gate reweight identically. Default
+        # ``reweight: none`` keeps the loss byte-identical to the official metric.
+        reg_cfg = losses_cfg.get("regression", {}) if losses_cfg else {}
+        self._reg_reweight = str(reg_cfg.get("reweight", "none")) if reg_cfg else "none"
+        if self._reg_reweight not in ("none", "balanced", "test_matched"):
+            raise ValueError(
+                "losses.regression.reweight must be one of {'none','balanced','test_matched'}, "
+                f"got {self._reg_reweight!r}"
+            )
+        self._reg_weight = float(reg_cfg.get("weight", 1.0)) if reg_cfg else 1.0
+        self._reg_warmup_epochs = int(reg_cfg.get("warmup_epochs", 0)) if reg_cfg else 0
+        self._reg_warmup_start_weight = (
+            float(reg_cfg.get("warmup_start_weight", 0.0)) if reg_cfg else 0.0
+        )
+        self._reg_clip_max = float(reg_cfg.get("clip_max", 10.0)) if reg_cfg else 10.0
+        _scheduled_loss_weight(
+            target_weight=self._reg_weight,
+            warmup_epochs=self._reg_warmup_epochs,
+            warmup_start_weight=self._reg_warmup_start_weight,
+            current_epoch=0,
+        )
+        self._reg_edges = None
+        reg_bin_weights = None  # registered once below (None when reweighting is off)
+        if self._reg_reweight != "none":
+            from ..metrics.eval_lenses import (
+                DEFAULT_LENS_EDGES,
+                balanced_proportions,
+                load_test_distribution,
+                per_bin_importance_weights,
+            )
+
+            if train_targets is None:
+                raise ValueError(
+                    "losses.regression.reweight requires train_targets (the full training "
+                    "occlusion distribution); pass it from scripts.training.train."
+                )
+            edges = DEFAULT_LENS_EDGES
+            n_bins = len(edges) - 1
+            if self._reg_reweight == "balanced":
+                target_props = balanced_proportions(n_bins)
+            else:
+                edges, target_props = load_test_distribution()
+            bin_w = per_bin_importance_weights(
+                train_targets, target_props, edges, clip_max=self._reg_clip_max
+            )
+            self._reg_edges = np.asarray(edges, dtype=float)
+            reg_bin_weights = torch.tensor(bin_w, dtype=torch.float32)
+        # Register once with either None or the tensor; avoids the "attribute already
+        # exists" error from assigning the name as a plain attribute first.
+        self.register_buffer("_reg_bin_weights", reg_bin_weights, persistent=False)
+
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> OcclusionModelOutput:
         # Returns the structured output contract (see models.outputs).
@@ -248,7 +310,8 @@ class FaceOcclusionLitModule(pl.LightningModule):
         preds = outputs.y_pred
         targets = batch["target"]
         batch_size = int(targets.shape[0])
-        loss_reg = weighted_mse_loss(preds, targets)
+        sample_weight = self._regression_sample_weight(targets)
+        loss_reg = weighted_mse_loss(preds, targets, sample_weight=sample_weight)
 
         loss_ord = self._compute_ordinal_loss(outputs, targets)
         loss_cons = self._compute_consistency_loss(outputs)
@@ -277,9 +340,20 @@ class FaceOcclusionLitModule(pl.LightningModule):
             on_epoch=True,
             batch_size=batch_size,
         )
-        if any(loss_x is not None for loss_x in (loss_ord, loss_cons, loss_mono, loss_rank)):
+        reweight_on = self._reg_reweight != "none"
+        if reweight_on or any(
+            loss_x is not None for loss_x in (loss_ord, loss_cons, loss_mono, loss_rank)
+        ):
             self.log(
                 "train/loss_reg", loss_reg, on_step=False, on_epoch=True, batch_size=batch_size
+            )
+        if reweight_on:
+            self.log(
+                "train/lambda_reg",
+                float(self._effective_regression_weight()),
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
             )
         if loss_ord is not None:
             self.log(
@@ -365,6 +439,36 @@ class FaceOcclusionLitModule(pl.LightningModule):
             warmup_start_weight=self._cons_warmup_start_weight,
             current_epoch=int(self.current_epoch),
         )
+
+    def _effective_regression_weight(self) -> float:
+        """Current-epoch reweight blend λ after optional linear warmup (1.0 = full)."""
+        return _scheduled_loss_weight(
+            target_weight=self._reg_weight,
+            warmup_epochs=self._reg_warmup_epochs,
+            warmup_start_weight=self._reg_warmup_start_weight,
+            current_epoch=int(self.current_epoch),
+        )
+
+    def _regression_sample_weight(self, targets: torch.Tensor) -> torch.Tensor | None:
+        """Per-sample importance weights for the regression loss, or None when disabled.
+
+        Looks up the precomputed per-bin weight by the batch's occlusion bin, blends with
+        the official (all-ones) weighting by the warmup λ — ``iw_eff = (1-λ) + λ·iw`` — and
+        renormalises to mean 1 so the loss scale is stable.
+        """
+        if self._reg_reweight == "none" or self._reg_bin_weights is None:
+            return None
+        from ..data.normalize import assign_occlusion_bin
+
+        t = targets.detach().cpu().numpy().reshape(-1)
+        bins = assign_occlusion_bin(t, self._reg_edges)
+        iw = self._reg_bin_weights.detach().cpu().numpy()[bins]
+        lam = self._effective_regression_weight()
+        iw_eff = (1.0 - lam) + lam * iw
+        mean = float(iw_eff.mean())
+        if mean > 0:
+            iw_eff = iw_eff / mean
+        return torch.as_tensor(iw_eff, dtype=targets.dtype, device=targets.device)
 
     def _compute_ordinal_loss(
         self, outputs: OcclusionModelOutput, targets: torch.Tensor

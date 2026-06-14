@@ -192,11 +192,15 @@ def main() -> None:
     # Use training-set mean target to warm-start the head bias. Use the same
     # normalization the dataset applies so the bias matches the model targets.
     mean_target = None
+    train_targets = None
     if dm.train_df is not None and cfg.data.target_col in dm.train_df.columns:
         vals = normalize_target(dm.train_df[cfg.data.target_col], cfg.data.target_scale)
         mean_target = float(vals.mean())
+        # Full training occlusion distribution for distribution-aware reweighting
+        # (losses.regression); a no-op unless that reweighting is enabled.
+        train_targets = np.asarray(vals, dtype=float)
 
-    module = FaceOcclusionLitModule(cfg, mean_target=mean_target)
+    module = FaceOcclusionLitModule(cfg, mean_target=mean_target, train_targets=train_targets)
     logger = _build_logger(cfg, run_dir)
     callbacks = build_callbacks(cfg, checkpoint_dir=checkpoint_dir)
 
