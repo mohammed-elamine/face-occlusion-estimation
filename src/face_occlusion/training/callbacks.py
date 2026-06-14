@@ -33,4 +33,19 @@ def build_callbacks(cfg, checkpoint_dir: str | Path | None = None) -> list:
         patience=int(cfg.training.get("early_stopping_patience", 5)),
     )
     lr_monitor = LearningRateMonitor(logging_interval="epoch")
-    return [checkpoint, early_stop, lr_monitor]
+    callbacks = [checkpoint, early_stop, lr_monitor]
+
+    # Optional EMA of weights (default off). When on, validation + checkpointing run on the
+    # EMA weights, so val/score, best.ckpt, and inference all use the averaged model.
+    ema_cfg = cfg.training.get("ema", {}) if hasattr(cfg.training, "get") else {}
+    if ema_cfg and bool(ema_cfg.get("enabled", False)):
+        from .ema import EMACallback
+
+        callbacks.append(
+            EMACallback(
+                decay=float(ema_cfg.get("decay", 0.999)),
+                warmup=bool(ema_cfg.get("warmup", True)),
+                validate_on_ema=bool(ema_cfg.get("validate_on_ema", True)),
+            )
+        )
+    return callbacks

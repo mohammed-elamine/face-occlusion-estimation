@@ -67,6 +67,7 @@ in later chapters):
   (modes: replace/brightness/noise/blur/shuffle/texture).
 - `losses.bg_consistency.enabled` — background-invariance consistency loss (needs background
   augmentation + a face-mask source).
+- `training.ema.enabled` — EMA of weights (validation/checkpointing use the averaged model).
 
 Misconfigurations are caught early: e.g. enabling `losses.consistency`/`monotonicity`
 without `model.use_ordinal_head` raises `ValueError` at module init

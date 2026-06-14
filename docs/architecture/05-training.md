@@ -111,6 +111,16 @@ reweighted objective. This shares its target distribution with the sampler's
   fixed filenames (`best.ckpt`, `last.ckpt`).
 - `EarlyStopping` — `training.early_stopping_patience` epochs on the same monitor.
 - `LearningRateMonitor` — per-epoch LR logging.
+- `EMACallback` (`training/ema.py`) — **optional, gated by `training.ema.{enabled, decay,
+  warmup}`** (default off). Keeps an exponential moving average of the model weights — a
+  "free ensemble over the optimization trajectory", our single-run stand-in for multi-seed
+  averaging (which we can't afford). The shadow updates per training batch
+  (`shadow = decay·shadow + (1−decay)·live`, with an optional warmup so noisy early weights
+  don't dominate). Crucially it **swaps the EMA weights into the model for validation and the
+  checkpoint save** (`on_validation_epoch_start`) and **restores the live weights at the next
+  `on_train_epoch_start`** — so `val/score`, `best.ckpt`, `_finalize`, and `predict_test` all
+  transparently use the averaged model. Swaps are in-place (optimizer stays bound to the live
+  weights); the shadow is persisted in the checkpoint for resume.
 
 ## Interrupt-safe finalization
 

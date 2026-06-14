@@ -22,6 +22,17 @@ time). A variant is only adopted if its Δscore CI is **below 0**.
 | 02 | `02_gender_balanced_loss` | `weighted_mse → gender_balanced` | Metric-aligned: the score is `0.5(Err_F+Err_M)+\|gap\|`; this trains that structure and targets the gap (~43% of the score). Cheap. |
 | 03 | `03_sigmoid` | `identity+clip → sigmoid` | Bounded output, possible boundary calibration gain. Cheap, modest odds. |
 | 04 | `04_mlp_head` | linear head → MLP head + discriminative LRs | "Stronger head" (as for DINOv2). Lower odds — a fully fine-tuned CNN's linear head is usually enough — but cheap. |
+| 05 | `05_champion_ema` | champion + `training.ema` | **EMA of weights** — a free ensemble over the optimization trajectory; our single-run stand-in for multi-seed averaging. Validation/checkpointing run on the EMA model. Highest-confidence small gain. |
+| 06 | `06_gender_balanced_ema` | `02` + EMA | gender_balanced loss + EMA — a strong ensemble member. |
+| 07 | `07_convnext_base_ema` | `01` + EMA | bigger backbone + EMA — a diverse, stronger ensemble member. |
+
+## Results (2026-06-14, all seed 42, paired-Δ vs champion 0.00129)
+
+01_convnext_base 0.00133, 02_gender_balanced 0.00128, 03_sigmoid 0.00133, 04_mlp_head 0.00137 —
+**all `ns`** (no single lever significantly beats the champion; the "capacity top pick" did not
+pan out). **But the ENSEMBLE of {champion, 01, 02, 03} (averaged predictions) = 0.00121, paired-Δ
+−0.000074 [−0.00013, −0.00002] → significantly better** — the first real win. The 05–07 EMA runs
+test EMA in isolation *and* are meant to strengthen each ensemble member (and thus the ensemble).
 
 ## Explicitly rejected (with evidence)
 
