@@ -95,6 +95,9 @@ def _ranking_module(weight=0.1):
     m._reg_reweight = "none"
     m._reg_bin_weights = None
     m._reg_edges = None
+    m._reg_loss_type = "weighted_mse"
+    m._reg_high_occ_power = 1.0
+    m._reg_gap_lambda = 0.0
     return m
 
 

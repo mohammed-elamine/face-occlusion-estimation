@@ -42,6 +42,43 @@ def weighted_mse_loss(
     return (weights * (preds - targets) ** 2).sum() / weights.sum().clamp_min(1e-12)
 
 
+def gender_balanced_weighted_mse_loss(
+    preds: torch.Tensor,
+    targets: torch.Tensor,
+    genders: torch.Tensor,
+    *,
+    female_value: float = 0.0,
+    male_value: float = 1.0,
+    high_occ_power: float = 1.0,
+    gap_lambda: float = 0.0,
+) -> torch.Tensor:
+    """Differentiable per-gender weighted MSE → mean (+ optional |gap|), the challenge metric.
+
+    Mirrors ``challenge_score``: ``Err_g = Σ_g w(ŷ−y)² / Σ_g w`` per gender (``w = 1/30 +
+    y**power``; ``power=1`` is exactly the metric weight), then ``0.5(Err_F+Err_M) +
+    gap_lambda·|Err_F−Err_M|``. A batch missing one gender falls back to the present gender's
+    error (and drops the gap term) so the loss stays finite.
+    """
+    w = (1.0 / 30.0) + targets**high_occ_power
+    sq = (preds - targets) ** 2
+
+    def _err(mask: torch.Tensor) -> torch.Tensor | None:
+        if not bool(mask.any()):
+            return None
+        ww = w[mask]
+        return (ww * sq[mask]).sum() / ww.sum().clamp_min(1e-12)
+
+    err_f = _err(genders == female_value)
+    err_m = _err(genders == male_value)
+    if err_f is None and err_m is None:
+        return (w * sq).sum() / w.sum().clamp_min(1e-12)  # no labelled gender → pooled
+    if err_f is None:
+        return err_m
+    if err_m is None:
+        return err_f
+    return 0.5 * (err_f + err_m) + gap_lambda * (err_f - err_m).abs()
+
+
 def _scheduled_loss_weight(
     *,
     target_weight: float,
@@ -251,6 +288,18 @@ class FaceOcclusionLitModule(pl.LightningModule):
         # the evaluation lenses so training and the gate reweight identically. Default
         # ``reweight: none`` keeps the loss byte-identical to the official metric.
         reg_cfg = losses_cfg.get("regression", {}) if losses_cfg else {}
+        # Base regression loss: 'weighted_mse' (pooled, default/unchanged) or
+        # 'gender_balanced' (per-gender weighted MSE → mean, the metric's structure).
+        self._reg_loss_type = (
+            str(reg_cfg.get("type", "weighted_mse")) if reg_cfg else "weighted_mse"
+        )
+        if self._reg_loss_type not in ("weighted_mse", "gender_balanced"):
+            raise ValueError(
+                "losses.regression.type must be 'weighted_mse' or 'gender_balanced', "
+                f"got {self._reg_loss_type!r}"
+            )
+        self._reg_high_occ_power = float(reg_cfg.get("high_occ_power", 1.0)) if reg_cfg else 1.0
+        self._reg_gap_lambda = float(reg_cfg.get("gender_gap_lambda", 0.0)) if reg_cfg else 0.0
         self._reg_reweight = str(reg_cfg.get("reweight", "none")) if reg_cfg else "none"
         if self._reg_reweight not in ("none", "balanced", "test_matched"):
             raise ValueError(
@@ -311,7 +360,18 @@ class FaceOcclusionLitModule(pl.LightningModule):
         targets = batch["target"]
         batch_size = int(targets.shape[0])
         sample_weight = self._regression_sample_weight(targets)
-        loss_reg = weighted_mse_loss(preds, targets, sample_weight=sample_weight)
+        if self._reg_loss_type == "gender_balanced":
+            loss_reg = gender_balanced_weighted_mse_loss(
+                preds,
+                targets,
+                batch["gender"],
+                female_value=float(self._female_value),
+                male_value=float(self._male_value),
+                high_occ_power=self._reg_high_occ_power,
+                gap_lambda=self._reg_gap_lambda,
+            )
+        else:
+            loss_reg = weighted_mse_loss(preds, targets, sample_weight=sample_weight)
 
         loss_ord = self._compute_ordinal_loss(outputs, targets)
         loss_cons = self._compute_consistency_loss(outputs)
@@ -571,11 +631,12 @@ class FaceOcclusionLitModule(pl.LightningModule):
             )
         self._val_buffer.append(
             {
-                "preds": preds.detach().cpu(),
+                # .float() so bf16-mixed predictions convert to numpy (no bfloat16 dtype).
+                "preds": preds.detach().float().cpu(),
                 "targets": targets.detach().cpu(),
                 "genders": batch["gender"].detach().cpu(),
                 "ordinal_logits": (
-                    outputs.ordinal_logits.detach().cpu()
+                    outputs.ordinal_logits.detach().float().cpu()
                     if outputs.ordinal_logits is not None and self._any_ordinal_diag_enabled()
                     else None
                 ),
@@ -1014,7 +1075,7 @@ class FaceOcclusionLitModule(pl.LightningModule):
         outputs = self(batch["image"])
         preds = outputs.y_pred
         out = {
-            "preds": preds.detach().cpu(),
+            "preds": preds.detach().float().cpu(),  # .float() for bf16-mixed -> numpy
             "image_ids": list(batch["image_id"]),
             "filenames": list(batch["filename"]),
             "paths": list(batch["path"]),
@@ -1029,8 +1090,11 @@ class FaceOcclusionLitModule(pl.LightningModule):
 
     # ------------------------------------------------------------------
     def configure_optimizers(self):
+        # Optimise only trainable params so LoRA (frozen backbone) trains just the
+        # adapters + head. Full fine-tuning is unaffected (all params require grad).
+        trainable = [p for p in self.parameters() if p.requires_grad]
         opt = AdamW(
-            self.parameters(),
+            trainable,
             lr=float(self.cfg.training.learning_rate),
             weight_decay=float(self.cfg.training.weight_decay),
         )

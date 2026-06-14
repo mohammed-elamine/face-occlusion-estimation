@@ -144,6 +144,9 @@ def _make_module(*, ord_weight: float, warmup_epochs: int, warmup_start: float =
     module._reg_reweight = "none"
     module._reg_bin_weights = None
     module._reg_edges = None
+    module._reg_loss_type = "weighted_mse"
+    module._reg_high_occ_power = 1.0
+    module._reg_gap_lambda = 0.0
     return module
 
 

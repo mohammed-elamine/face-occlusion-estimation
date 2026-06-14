@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import shutil
 import warnings
@@ -151,6 +152,52 @@ def _save_val_predictions(module: FaceOcclusionLitModule, out_dir: Path) -> Path
     return path
 
 
+def _finalize(trainer, module, dm, run_dir: Path, *, interrupted: bool) -> None:
+    """Best-effort: persist the best-so-far model's validation predictions, then a status
+    marker. Runs on normal completion AND on interrupt/error so an interrupted run still
+    leaves an analysable artifact. Never raises (so it can't mask the original error)."""
+    status = "interrupted" if interrupted else "completed"
+    try:
+        ckpt_cb = getattr(trainer, "checkpoint_callback", None)
+        best = getattr(ckpt_cb, "best_model_path", "") if ckpt_cb else ""
+        source = "last-epoch validation outputs (in memory)"
+        if best and Path(best).exists():
+            # Refresh _last_val_outputs to the BEST checkpoint's predictions.
+            try:
+                trainer.validate(module, datamodule=dm, ckpt_path="best")
+                source = f"best checkpoint ({Path(best).name})"
+            except Exception as exc:  # noqa: BLE001 - finalize must be resilient
+                print(
+                    f"[train] Could not re-validate best checkpoint ({exc}); "
+                    "falling back to the last in-memory validation outputs."
+                )
+        elif getattr(module, "_last_val_outputs", None) is None:
+            # Interrupted before any validation completed: try current weights.
+            try:
+                trainer.validate(module, datamodule=dm)
+                source = "current (unvalidated) weights"
+            except Exception as exc:  # noqa: BLE001
+                print(f"[train] No checkpoint and no validation outputs to save ({exc}).")
+
+        pred_path = _save_val_predictions(module, run_dir / "predictions")
+        (run_dir / "training_status.json").write_text(
+            json.dumps(
+                {
+                    "status": status,
+                    "predictions_from": source,
+                    "best_checkpoint": best,
+                    "predictions": str(pred_path) if pred_path != Path() else None,
+                },
+                indent=2,
+            )
+        )
+        print(f"[train] Finalize ({status}): predictions from {source}")
+        if best:
+            print(f"[train] Best checkpoint: {best}")
+    except Exception as exc:  # noqa: BLE001 - never let finalize crash the process
+        print(f"[train] WARNING: finalize could not save predictions: {exc}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
@@ -218,15 +265,19 @@ def main() -> None:
         deterministic=deterministic,
     )
 
-    trainer.fit(module, datamodule=dm)
-    trainer.validate(module, datamodule=dm, ckpt_path="best")
-
-    pred_path = _save_val_predictions(module, run_dir / "predictions")
-    best_ckpt = getattr(trainer.checkpoint_callback, "best_model_path", "")
+    # Wrap fit so an interrupt (Ctrl+C) or an intermediate-epoch error still saves the
+    # best-so-far model's predictions before exiting. KeyboardInterrupt -> clean exit;
+    # a real error is re-raised AFTER finalize so the failure stays visible.
+    interrupted = False
+    try:
+        trainer.fit(module, datamodule=dm)
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\n[train] KeyboardInterrupt — saving best-so-far predictions before exit...")
+    finally:
+        _finalize(trainer, module, dm, run_dir, interrupted=interrupted)
 
     print(f"Experiment directory: {run_dir}")
-    print(f"Best checkpoint: {best_ckpt or checkpoint_dir / 'best.ckpt'}")
-    print(f"Validation predictions: {pred_path}")
 
 
 if __name__ == "__main__":
