@@ -9,6 +9,7 @@ import timm
 import torch
 import torch.nn as nn
 
+from .distribution import expectation, make_bin_centers
 from .ordinal import DEFAULT_ORDINAL_THRESHOLDS, OrdinalHead
 from .outputs import OcclusionModelOutput
 
@@ -45,13 +46,17 @@ class OcclusionRegressor(nn.Module):
 
         head_cfg = dict(head) if head else {}
         self.head_type = str(head_cfg.get("type", "linear"))
-        if self.head_type not in {"linear", "mlp"}:
-            raise ValueError(f"model.head.type must be linear|mlp, got {self.head_type!r}")
+        if self.head_type not in {"linear", "mlp", "distribution"}:
+            raise ValueError(
+                f"model.head.type must be linear|mlp|distribution, got {self.head_type!r}"
+            )
         mlp_head = self.head_type == "mlp"
+        dist_head = self.head_type == "distribution"
+        separate_head = mlp_head or dist_head  # a head module outside the backbone
 
         self.use_ordinal_head = bool(use_ordinal_head)
         lora_enabled = bool(lora.get("enabled", False)) if lora else False
-        if self.use_ordinal_head and (mlp_head or lora_enabled):
+        if self.use_ordinal_head and (separate_head or lora_enabled):
             raise ValueError(
                 "The ordinal head is only supported with model.head.type=linear and LoRA off."
             )
@@ -64,8 +69,11 @@ class OcclusionRegressor(nn.Module):
         #    MLP head and interpolates its position embeddings to the input size itself.
         self.backbone_source = str(backbone_source)
         if self.backbone_source == "torchhub":
-            if not mlp_head:
-                raise ValueError("backbone_source='torchhub' requires model.head.type=mlp")
+            if not separate_head:
+                raise ValueError(
+                    "backbone_source='torchhub' requires a separate head "
+                    "(model.head.type=mlp|distribution)"
+                )
             self.backbone = torch.hub.load(
                 "facebookresearch/dinov2", backbone, pretrained=pretrained
             )
@@ -75,7 +83,7 @@ class OcclusionRegressor(nn.Module):
                 pretrained=pretrained,
                 # mlp head: backbone is a pure feature extractor (num_classes=0).
                 # linear head: timm's own classifier with num_classes=1 (Stage 0 behaviour).
-                num_classes=0 if mlp_head else 1,
+                num_classes=0 if separate_head else 1,
                 drop_rate=float(dropout),
             )
             if img_size is not None:
@@ -101,6 +109,17 @@ class OcclusionRegressor(nn.Module):
                 nn.Dropout(float(head_cfg.get("dropout", 0.0))),
                 nn.Linear(hidden, 1),
             )
+        elif dist_head:
+            # Ordered-bin distribution head (DEX/DLDL): K logits over occlusion bins; the
+            # prediction is the expectation over the bin centers (see models/distribution.py).
+            n_bins = int(head_cfg.get("n_bins", 21))
+            rng = head_cfg.get("range", [0.0, 1.0])
+            self.head = nn.Sequential(nn.LayerNorm(feat_dim), nn.Linear(feat_dim, n_bins))
+            self.register_buffer(
+                "bin_centers",
+                make_bin_centers(n_bins, float(rng[0]), float(rng[1])),
+                persistent=True,
+            )
         else:
             self.head = None
 
@@ -125,7 +144,8 @@ class OcclusionRegressor(nn.Module):
     def _init_head_bias(self, mean_target: float | None) -> None:
         # Warm-start the regression bias near the training mean so optimisation
         # does not waste epochs learning the global offset.
-        if mean_target is None:
+        # The distribution head is a K-way classifier; a scalar mean-target bias does not apply.
+        if mean_target is None or self.head_type == "distribution":
             return
         m = float(mean_target)
         if self.output_activation == "sigmoid":
@@ -196,6 +216,15 @@ class OcclusionRegressor(nn.Module):
         return raw
 
     def forward(self, x: torch.Tensor) -> OcclusionModelOutput:
+        # Distribution (DEX/DLDL) head: pooled features -> K bin logits -> softmax -> the
+        # prediction is the bin expectation (bounded to [c_1, c_K], so no activation needed).
+        if self.head_type == "distribution":
+            feat = self.backbone(x)
+            logits = self.head(feat)
+            probs = torch.softmax(logits, dim=-1)
+            y_pred = expectation(probs, self.bin_centers)
+            return OcclusionModelOutput(y_pred=y_pred, bin_logits=logits, features=feat)
+
         # MLP-head path: backbone (num_classes=0) -> pooled features -> separate MLP head.
         if self.head is not None:
             feat = self.backbone(x)

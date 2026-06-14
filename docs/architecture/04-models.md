@@ -10,8 +10,9 @@ A structured output dataclass keeps the training loop stable as heads are added.
 
 | field | shape | when populated |
 |-------|-------|----------------|
-| `y_pred` | `(B,)` | always — the continuous occlusion score (after activation) |
+| `y_pred` | `(B,)` | always — the continuous occlusion score (after activation, or the bin expectation for the distribution head) |
 | `ordinal_logits` | `(B, K)` | only with the ordinal head; per-threshold logits |
+| `bin_logits` | `(B, K)` | only with the distribution head; per-bin logits (`y_pred` is then `Σ softmax·centers`) — see [09](09-imbalanced-regression-and-expectation-head.md) |
 | `features` | `(B, d)` | when the multi-head path computes pooled features |
 | `projection` | `(B, p)` | reserved for a future contrastive projection head |
 
@@ -31,6 +32,10 @@ Downstream code reads `out.y_pred`; auxiliary fields are `None` on the baseline 
   `num_features`), and a separate head is added:
   `LayerNorm(d) → Linear(d, hidden_dim) → GELU → Dropout → Linear(hidden_dim, 1)`.
   `forward` is `feat = backbone(x); raw = head(feat); y = activation(raw)`.
+- `distribution`: `num_classes=0` extractor + `LayerNorm(d) → Linear(d, K)` over `K` ordered
+  occlusion bins; `forward` returns `y_pred = Σ softmax(logits)·bin_centers` (the expectation,
+  bounded so no activation) and `bin_logits`. Trained with the `dldl` loss. Incompatible with
+  the ordinal head. The full method is [09](09-imbalanced-regression-and-expectation-head.md).
 
 **Output activation (`model.output_activation`):** `identity` or `sigmoid` (bounded `[0,1]`
 regression). `_init_head_bias(mean_target)` warm-starts the final Linear bias toward the

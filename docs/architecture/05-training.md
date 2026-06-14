@@ -22,7 +22,10 @@ LightningModule that orchestrates the loss stack, optimization, and validation m
 
 ## The multi-task loss stack
 
-`losses.regression.type` selects the base term (`weighted_mse` or `gender_balanced`).
+`losses.regression.type` selects the base term: `weighted_mse`, `gender_balanced`, or `dldl`
+(label-distribution learning for the distribution head — `dldl_kl_loss` on the Gaussian/LDS soft
+labels + a metric-weighted MSE on the expectation; requires `model.head.type=distribution`, see
+[09](09-imbalanced-regression-and-expectation-head.md)).
 Auxiliary terms are each gated, warmed independently, and summed:
 
 ```

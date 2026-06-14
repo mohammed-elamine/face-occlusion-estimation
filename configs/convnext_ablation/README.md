@@ -25,6 +25,7 @@ time). A variant is only adopted if its Δscore CI is **below 0**.
 | 05 | `05_champion_ema` | champion + `training.ema` | **EMA of weights** — a free ensemble over the optimization trajectory; our single-run stand-in for multi-seed averaging. Validation/checkpointing run on the EMA model. Highest-confidence small gain. |
 | 06 | `06_gender_balanced_ema` | `02` + EMA | gender_balanced loss + EMA — a strong ensemble member. |
 | 07 | `07_convnext_base_ema` | `01` + EMA | bigger backbone + EMA — a diverse, stronger ensemble member. |
+| 08 | `08_ordinal_expectation_dldl` | linear head → distribution head + `dldl` loss | Ordered-bin **expectation** head (DEX) with **DLDL/LDS** soft labels — the literature's imbalanced-regression approach. A *decorrelated* (classification-trained) ensemble member. See [docs/architecture/09](../../docs/architecture/09-imbalanced-regression-and-expectation-head.md). |
 
 ## Results (2026-06-14, all seed 42, paired-Δ vs champion 0.00129)
 

@@ -21,12 +21,14 @@ from ..models import (
     DEFAULT_ORDINAL_THRESHOLD_WEIGHTS,
     OcclusionModelOutput,
     build_model,
+    dldl_kl_loss,
     make_ordinal_targets,
     monotonic_ranking_loss,
     ordering_accuracy,
     ordinal_monotonicity_loss,
     ordinal_monotonicity_violation_rate,
     regression_ordinal_consistency_loss,
+    soft_label_distribution,
     threshold_weighted_bce,
 )
 
@@ -318,10 +320,21 @@ class FaceOcclusionLitModule(pl.LightningModule):
         self._reg_loss_type = (
             str(reg_cfg.get("type", "weighted_mse")) if reg_cfg else "weighted_mse"
         )
-        if self._reg_loss_type not in ("weighted_mse", "gender_balanced"):
+        if self._reg_loss_type not in ("weighted_mse", "gender_balanced", "dldl"):
             raise ValueError(
-                "losses.regression.type must be 'weighted_mse' or 'gender_balanced', "
+                "losses.regression.type must be 'weighted_mse', 'gender_balanced', or 'dldl', "
                 f"got {self._reg_loss_type!r}"
+            )
+        # DLDL (ordered-bin label-distribution learning) knobs: only used when type == 'dldl',
+        # which requires model.head.type == 'distribution' (the head exposes bin_centers).
+        self._dldl_lds_sigma = float(reg_cfg.get("lds_sigma", 0.05)) if reg_cfg else 0.05
+        self._dldl_expectation_weight = (
+            float(reg_cfg.get("expectation_weight", 1.0)) if reg_cfg else 1.0
+        )
+        _head_type = getattr(self.model, "head_type", None)
+        if self._reg_loss_type == "dldl" and _head_type != "distribution":
+            raise ValueError(
+                "losses.regression.type='dldl' requires model.head.type='distribution'."
             )
         self._reg_high_occ_power = float(reg_cfg.get("high_occ_power", 1.0)) if reg_cfg else 1.0
         self._reg_gap_lambda = float(reg_cfg.get("gender_gap_lambda", 0.0)) if reg_cfg else 0.0
@@ -385,7 +398,16 @@ class FaceOcclusionLitModule(pl.LightningModule):
         targets = batch["target"]
         batch_size = int(targets.shape[0])
         sample_weight = self._regression_sample_weight(targets)
-        if self._reg_loss_type == "gender_balanced":
+        if self._reg_loss_type == "dldl":
+            # Label-distribution learning: KL to Gaussian (LDS) soft labels over the bins, plus
+            # a metric-weighted MSE on the expectation (preds) to stay aligned to the challenge.
+            soft = soft_label_distribution(targets, self.model.bin_centers, self._dldl_lds_sigma)
+            loss_reg = dldl_kl_loss(
+                outputs.bin_logits, soft
+            ) + self._dldl_expectation_weight * weighted_mse_loss(
+                preds, targets, sample_weight=sample_weight
+            )
+        elif self._reg_loss_type == "gender_balanced":
             loss_reg = gender_balanced_weighted_mse_loss(
                 preds,
                 targets,

@@ -22,6 +22,7 @@ high-occlusion-weighted**, and that single fact drives most of the design (see
 | 06 | [Metrics & evaluation](06-metrics-and-evaluation.md) | The challenge metric, bootstrap CIs, evaluation lenses, leakage-free scoring — the CI-first gate. |
 | 07 | [Pipeline & experiments](07-pipeline-and-experiments.md) | The CLI scripts (validate → split → train → predict → analyze → compare), the experiment-folder layout, inference & submission. |
 | 08 | [Cluster & remote](08-cluster-and-remote.md) | SLURM job, RunPod setup/sync/run helpers, the persistent uv cache/venv, the CUDA wheel pinning. |
+| 09 | [Imbalanced regression & expectation head](09-imbalanced-regression-and-expectation-head.md) | The ordered-bin DEX + DLDL/LDS expectation head for the imbalanced tail, as a diverse ensemble member. |
 
 ## The library at a glance
 

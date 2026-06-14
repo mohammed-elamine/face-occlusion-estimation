@@ -41,3 +41,6 @@ class OcclusionModelOutput:
     ordinal_logits: torch.Tensor | None = None
     projection: torch.Tensor | None = None
     features: torch.Tensor | None = None
+    # Per-bin logits from the distribution (DEX/DLDL) head, shape ``(B, K)``. ``None`` unless
+    # ``model.head.type == "distribution"``. ``y_pred`` is then the bin expectation.
+    bin_logits: torch.Tensor | None = None
