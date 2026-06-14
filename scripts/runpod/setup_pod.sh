@@ -65,18 +65,23 @@ BOOTSTRAP_SSH_SCRIPT="${SCRIPTS_DIR}/bootstrap_runtime_ssh.sh"
 # inputs rather than whatever `git clone` happened to leave checked out.
 
 BRANCH="${BRANCH:-}"
+NONINTERACTIVE=0
 # Seed extras from the EXTRAS env var (space-separated); flags append to this.
 read -r -a EXTRAS <<< "${EXTRAS:-}"
 
 usage() {
     cat <<'EOF'
-Usage: setup_pod.sh [--branch <name>] [--extra <name> ...]
+Usage: setup_pod.sh [--branch <name>] [--extra <name> ...] [--no-interactive]
 
-  --branch, -b <name>   Branch to check out and sync (default: current/clone default).
-                        The env (uv.lock/deps) is branch-specific, so this drives
+  --branch, -b <name>   Branch to check out and sync. If omitted and running
+                        interactively, you are shown a picker of the repo's
+                        branches (fzf if installed, else a numbered menu). The
+                        env (uv.lock/deps) is branch-specific, so this drives
                         which dependencies get installed.
   --extra,  -e <name>   Optional dependency extra to install; repeatable
                         (e.g. --extra synthetic --extra wandb).
+  --no-interactive      Never prompt; keep the current/clone-default branch when
+                        no --branch is given (for cron/headless runs).
   --help,   -h          Show this help and exit.
 
 Env-var overrides (flags take precedence):
@@ -84,6 +89,7 @@ Env-var overrides (flags take precedence):
   EXTRAS="a b"          Space-separated extras, same as repeated --extra.
 
 Examples:
+  bash setup_pod.sh                       # pick a branch interactively
   bash setup_pod.sh --branch feat/lora
   bash setup_pod.sh -b main --extra synthetic
 EOF
@@ -100,6 +106,10 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || { echo "ERROR: $1 requires a value"; exit 2; }
             EXTRAS+=("$2")
             shift 2
+            ;;
+        --no-interactive)
+            NONINTERACTIVE=1
+            shift
             ;;
         -h|--help)
             usage
@@ -118,6 +128,69 @@ UV_EXTRA_ARGS=()
 for _extra in "${EXTRAS[@]:-}"; do
     [ -n "${_extra}" ] && UV_EXTRA_ARGS+=(--extra "${_extra}")
 done
+
+# ============================================================
+# Helper: interactively pick a branch (sets BRANCH)
+# ============================================================
+#
+# Lists the repo's remote branches and lets the user choose one. Prefers fzf
+# (fuzzy + scroll) and tries a best-effort install if it is missing; otherwise
+# falls back to the bash `select` numbered menu. Must run AFTER `git fetch` so the
+# remote branches are known. Pressing Esc / Enter with no choice keeps the current
+# branch (BRANCH stays empty).
+
+select_branch_interactive() {
+    local branches current i reply
+    # Filter on the full refname so the origin/HEAD symref is dropped cleanly
+    # (its short form is "origin", which a HEAD-only filter would miss).
+    mapfile -t branches < <(
+        git for-each-ref --format='%(refname)' refs/remotes/origin 2>/dev/null \
+            | grep -v '/HEAD$' \
+            | sed 's#^refs/remotes/origin/##' \
+            | sort -u
+    )
+    if [ "${#branches[@]}" -eq 0 ]; then
+        echo "    No remote branches found; keeping the current branch."
+        return 0
+    fi
+
+    current="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+    echo
+    echo "==> Select a branch to check out and sync (current: ${current})"
+
+    # Best-effort: get fzf for the nicer scrollable picker if it is missing.
+    if ! command -v fzf >/dev/null 2>&1; then
+        apt-get install -y fzf >/dev/null 2>&1 \
+            || { apt-get update >/dev/null 2>&1 && apt-get install -y fzf >/dev/null 2>&1; } \
+            || true
+    fi
+
+    if command -v fzf >/dev/null 2>&1; then
+        # `|| BRANCH=""` keeps set -e happy when the user presses Esc (fzf exits non-zero).
+        BRANCH="$(printf '%s\n' "${branches[@]}" \
+            | fzf --prompt='branch> ' --height='40%' --reverse --no-multi \
+                  --header='type to filter | up/down to scroll | Enter to select | Esc to keep current')" \
+            || BRANCH=""
+    else
+        echo "    (install fzf for a scrollable fuzzy picker; using a numbered menu)"
+        for i in "${!branches[@]}"; do
+            printf "  %2d) %s\n" "$((i + 1))" "${branches[$i]}"
+        done
+        reply=""
+        read -r -p "Enter number (or just Enter to keep '${current}'): " reply || true
+        # Blank or non-numeric or out-of-range -> keep current (BRANCH stays empty).
+        if [[ "${reply}" =~ ^[0-9]+$ ]] \
+            && [ "${reply}" -ge 1 ] && [ "${reply}" -le "${#branches[@]}" ]; then
+            BRANCH="${branches[$((reply - 1))]}"
+        fi
+    fi
+
+    if [ -n "${BRANCH}" ]; then
+        echo "==> Selected branch: ${BRANCH}"
+    else
+        echo "==> No selection; keeping the current branch (${current})."
+    fi
+}
 
 # ============================================================
 # Helper: safely create or update a symlink
@@ -236,6 +309,12 @@ cd "${REPO_DIR}"
 echo "==> Fetching remote..."
 git fetch --all --prune || true
 
+# No branch requested: offer an interactive picker when attached to a terminal.
+# Skipped with --no-interactive or when stdin is not a TTY (cron/headless).
+if [ -z "${BRANCH}" ] && [ "${NONINTERACTIVE}" -eq 0 ] && [ -t 0 ]; then
+    select_branch_interactive
+fi
+
 # The branch determines which pyproject.toml / uv.lock (and thus which deps) get
 # synced below, so check it out explicitly when requested.
 if [ -n "${BRANCH}" ]; then
@@ -340,7 +419,7 @@ echo
 echo "==> Installing useful system packages..."
 
 apt-get update
-apt-get install -y unzip rsync tmux nano
+apt-get install -y unzip rsync tmux nano fzf
 
 # ============================================================
 # 6. Install uv and sync environment

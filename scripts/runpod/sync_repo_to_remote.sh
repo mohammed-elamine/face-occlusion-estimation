@@ -23,14 +23,21 @@ set -euo pipefail
 # This script never pushes anything.
 #
 # Usage:
+#   bash /workspace/scripts/sync_repo_to_remote.sh            # pick a branch interactively
 #   bash /workspace/scripts/sync_repo_to_remote.sh main
 #   bash /workspace/scripts/sync_repo_to_remote.sh feat/contrastive-learning
+#
+# With no branch argument, an interactive picker (fzf if available, else a numbered
+# menu) lists the remote branches. Set NONINTERACTIVE=1 to skip it (defaults to main).
 #
 # ============================================================
 
 REPO_DIR="/workspace/repos/face-occlusion-estimation"
 REMOTE_NAME="origin"
-BRANCH="${1:-main}"
+# Branch is the optional first positional arg. If omitted (and interactive) the
+# user picks one after the fetch below; otherwise it defaults to main.
+BRANCH_ARG="${1:-}"
+BRANCH="${BRANCH_ARG}"
 
 WORKSPACE_SCRIPTS_DIR="/workspace/scripts"
 REPO_RUNPOD_SCRIPTS_DIR="scripts/runpod"
@@ -329,12 +336,64 @@ ensure_project_layout() {
     echo "outputs/splits:       $(readlink -f outputs/splits 2>/dev/null || echo 'missing')"
 }
 
+# ============================================================
+# Helper: interactively pick a branch (sets BRANCH)
+# ============================================================
+# Mirrors setup_pod.sh: lists remote branches and lets the user choose. Prefers
+# fzf (fuzzy + scroll, best-effort installed); falls back to a numbered read menu.
+# Must run AFTER `git fetch`. Esc/blank leaves BRANCH empty (caller applies default).
+select_branch_interactive() {
+    local branches current i reply
+    mapfile -t branches < <(
+        git for-each-ref --format='%(refname)' refs/remotes/origin 2>/dev/null \
+            | grep -v '/HEAD$' \
+            | sed 's#^refs/remotes/origin/##' \
+            | sort -u
+    )
+    if [ "${#branches[@]}" -eq 0 ]; then
+        echo "    No remote branches found; defaulting to main."
+        return 0
+    fi
+    current="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo '?')"
+    echo
+    echo "==> Select a branch to sync (current: ${current})"
+
+    # Best-effort: get fzf for the nicer scrollable picker if it is missing.
+    if ! command -v fzf >/dev/null 2>&1; then
+        apt-get install -y fzf >/dev/null 2>&1 \
+            || { apt-get update >/dev/null 2>&1 && apt-get install -y fzf >/dev/null 2>&1; } \
+            || true
+    fi
+
+    if command -v fzf >/dev/null 2>&1; then
+        # `|| BRANCH=""` keeps set -e happy when the user presses Esc.
+        BRANCH="$(printf '%s\n' "${branches[@]}" \
+            | fzf --prompt='branch> ' --height='40%' --reverse --no-multi \
+                  --header='type to filter | up/down to scroll | Enter to select | Esc for default')" \
+            || BRANCH=""
+    else
+        echo "    (install fzf for a scrollable fuzzy picker; using a numbered menu)"
+        for i in "${!branches[@]}"; do
+            printf "  %2d) %s\n" "$((i + 1))" "${branches[$i]}"
+        done
+        reply=""
+        read -r -p "Enter number (or just Enter for default): " reply || true
+        # Blank or non-numeric or out-of-range -> keep BRANCH empty (caller defaults).
+        if [[ "${reply}" =~ ^[0-9]+$ ]] \
+            && [ "${reply}" -ge 1 ] && [ "${reply}" -le "${#branches[@]}" ]; then
+            BRANCH="${branches[$((reply - 1))]}"
+        fi
+    fi
+
+    [ -n "${BRANCH}" ] && echo "==> Selected branch: ${BRANCH}"
+}
+
 echo "============================================================"
 echo "Sync repo to remote branch"
 echo "============================================================"
 echo "Repo dir: ${REPO_DIR}"
 echo "Remote:   ${REMOTE_NAME}"
-echo "Branch:   ${BRANCH}"
+echo "Branch:   ${BRANCH:-<select after fetch>}"
 echo "============================================================"
 echo
 
@@ -354,6 +413,13 @@ echo
 
 info "Fetching latest remote refs..."
 git fetch "${REMOTE_NAME}" --prune
+
+# No branch arg: offer the interactive picker (TTY only; skip with NONINTERACTIVE=1).
+if [ -z "${BRANCH_ARG}" ] && [ "${NONINTERACTIVE:-0}" -eq 0 ] && [ -t 0 ]; then
+    select_branch_interactive
+fi
+BRANCH="${BRANCH:-main}"   # default when no arg given and nothing picked
+info "Target branch: ${BRANCH}"
 
 REMOTE_REF="${REMOTE_NAME}/${BRANCH}"
 

@@ -1,0 +1,114 @@
+# DINOv2 ViT-B reg + LoRA — PLAIN recipe via TORCH.HUB backbone (Exp B).
+# Identical to 01_vit_b_reg_lora_plain.yaml EXCEPT the backbone is loaded with
+# torch.hub.load("facebookresearch/dinov2", "dinov2_vitb14_reg") instead of timm. This is
+# the LAST unmatched component vs the teammate's `lora_b_plain` (val ~0.00115): the recipe,
+# MLP head, sigmoid, LoRA, LRs, schedule, and CLS-token pooling are already verified identical;
+# only the backbone loader (and its position-embedding interpolation) differs. If this lands
+# near 0.00115, the timm-vs-torch.hub loader was the gap. Compare vs 01_plain (0.00158) and
+# the ConvNeXt baseline (0.00129) via compare_experiments. We keep OUR split unchanged.
+project:
+  name: face-occlusion-estimation
+  seed: 42
+  output_dir: outputs
+  deterministic: false
+experiment:
+  name: dinov2_vitb_reg_torchhub_plain
+  output_root: outputs/experiments
+  save_git_info: true
+  save_config: true
+  create_latest_pointer: true
+data:
+  train_csv: data/raw/occlusion_datasets/train.csv
+  test_csv: data/raw/occlusion_datasets/test_students.csv
+  image_root: data/raw/crops/Crop_224_5fp_100K
+  image_col: filename
+  target_col: FaceOcclusion
+  gender_col: gender
+  id_col: filename
+  female_value: 0.0
+  male_value: 1.0
+  submission_dummy_gender: 0
+  target_scale: auto
+  val_size: 0.2
+  num_workers: 8
+split:
+  strategy: row_stratified
+  occlusion_bins: [0.0, 0.05, 0.1, 0.2, 0.4, 0.6, 1.0]
+  split_path: outputs/splits/canonical_row_split.csv
+  val_size: 0.2
+  random_state: 42
+  stratify_by: [gender, occlusion_bin, database]
+  group_col: group_id
+  allow_missing_rows: false
+model:
+  backbone: dinov2_vitb14_reg          # torch.hub entrypoint name (NOT a timm id)
+  backbone_source: torchhub            # load via torch.hub.load("facebookresearch/dinov2", ...)
+  pretrained: true
+  output_activation: sigmoid           # bounded [0,1] regression (teammate uses sigmoid too)
+  dropout: 0.0
+  use_ordinal_head: false
+  head:
+    type: mlp                          # LayerNorm -> Linear(768,256) -> GELU -> Dropout -> Linear(256,1)
+    hidden_dim: 256
+    dropout: 0.2
+  lora:
+    enabled: true
+    rank: 16
+    alpha: 32
+    dropout: 0.05
+    target_modules: [qkv, proj]        # torch.hub DINOv2 module names (match the teammate)
+losses:
+  regression:
+    type: gender_balanced
+    reweight: none
+  ordinal: {enabled: false}
+  consistency: {enabled: false}
+  monotonicity: {enabled: false}
+  ranking: {enabled: false}
+  triplet: {enabled: false}
+synthetic_occlusion:
+  enabled: false
+triplet_sampling:
+  enabled: false
+training:
+  batch_size: 64
+  max_epochs: 20
+  learning_rate: 2.0e-4
+  head_lr: 1.0e-3
+  backbone_lr: 2.0e-4
+  weight_decay: 1.0e-4
+  warmup_frac: 0.05
+  optimizer: adamw
+  scheduler: cosine
+  precision: bf16-mixed
+  float32_matmul_precision: high
+  gradient_clip_val: 0.0
+  early_stopping_patience: 5
+augmentation:
+  resize: 224
+  horizontal_flip_p: 0.0               # plain: augmentation off
+  color_jitter_p: 0.0
+  brightness: 0.0
+  contrast: 0.0
+  saturation: 0.0
+  hue: 0.0
+  rotation_degrees: 0
+  background:
+    enabled: false
+inference:
+  tta: false
+logging:
+  use_wandb: false
+  wandb_project: face-occlusion-estimation
+  run_name: dinov2_vitb_reg_torchhub_plain
+  log_images: false
+  log_prediction_plots: true
+  log_images_every_n_epochs: 1
+  num_logged_images: 16
+sampler:
+  enabled: false
+checkpoint:
+  monitor: val/score
+  mode: min
+  save_top_k: 1
+  filename: best

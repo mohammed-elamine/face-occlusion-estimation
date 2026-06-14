@@ -5,6 +5,10 @@ how the main workflow fits together. It is meant to be the reference document
 for teammates who want to train the current baseline, add future model configs,
 or analyze experiment outputs.
 
+> For a code-oriented, component-by-component walkthrough of the architecture
+> (with references to the exact files/symbols), see
+> [`docs/architecture/`](architecture/README.md).
+
 ## Project Goal
 
 The task is supervised image regression. Each input is a cropped face image,

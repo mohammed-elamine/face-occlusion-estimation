@@ -36,6 +36,7 @@ class OcclusionRegressor(nn.Module):
         img_size: int | None = None,
         lora: dict | None = None,
         head: dict | None = None,
+        backbone_source: str = "timm",
     ) -> None:
         super().__init__()
         if output_activation not in {"identity", "sigmoid"}:
@@ -55,28 +56,47 @@ class OcclusionRegressor(nn.Module):
                 "The ordinal head is only supported with model.head.type=linear and LoRA off."
             )
 
-        create_kwargs: dict = dict(
-            pretrained=pretrained,
-            # mlp head: backbone is a pure feature extractor (num_classes=0).
-            # linear head: timm's own classifier with num_classes=1 (Stage 0 behaviour).
-            num_classes=0 if mlp_head else 1,
-            drop_rate=float(dropout),
-        )
-        if img_size is not None:
-            # ViT backbones (e.g. DINOv2 patch-14) take an explicit input size and
-            # interpolate position embeddings; CNN configs leave this unset (unchanged).
-            create_kwargs["img_size"] = int(img_size)
-            create_kwargs["dynamic_img_size"] = True
-        self.backbone = timm.create_model(backbone, **create_kwargs)
+        # Build the backbone via one of two loaders, and resolve the pooled-feature dim.
+        #  - "timm" (default): timm.create_model. The linear-head path uses timm's own
+        #    classifier (num_classes=1); the mlp path makes it a pure feature extractor.
+        #  - "torchhub": the official DINOv2 (e.g. dinov2_vitb14_reg) via torch.hub. It has
+        #    no built-in classifier and returns the CLS token, so it requires the separate
+        #    MLP head and interpolates its position embeddings to the input size itself.
+        self.backbone_source = str(backbone_source)
+        if self.backbone_source == "torchhub":
+            if not mlp_head:
+                raise ValueError("backbone_source='torchhub' requires model.head.type=mlp")
+            self.backbone = torch.hub.load(
+                "facebookresearch/dinov2", backbone, pretrained=pretrained
+            )
+            feat_dim = int(self.backbone.embed_dim)
+        elif self.backbone_source == "timm":
+            create_kwargs: dict = dict(
+                pretrained=pretrained,
+                # mlp head: backbone is a pure feature extractor (num_classes=0).
+                # linear head: timm's own classifier with num_classes=1 (Stage 0 behaviour).
+                num_classes=0 if mlp_head else 1,
+                drop_rate=float(dropout),
+            )
+            if img_size is not None:
+                # ViT backbones (e.g. DINOv2 patch-14) take an explicit input size and
+                # interpolate position embeddings; CNN configs leave this unset (unchanged).
+                create_kwargs["img_size"] = int(img_size)
+                create_kwargs["dynamic_img_size"] = True
+            self.backbone = timm.create_model(backbone, **create_kwargs)
+            feat_dim = int(self.backbone.num_features)
+        else:
+            raise ValueError(
+                f"model.backbone_source must be 'timm' or 'torchhub', got {self.backbone_source!r}"
+            )
 
         # Separate MLP regression head on the pooled features (mlp path). For the linear
         # path the head lives inside the timm backbone (num_classes=1) and self.head is None.
         if mlp_head:
-            d = int(self.backbone.num_features)
             hidden = int(head_cfg.get("hidden_dim", 256))
             self.head = nn.Sequential(
-                nn.LayerNorm(d),
-                nn.Linear(d, hidden),
+                nn.LayerNorm(feat_dim),
+                nn.Linear(feat_dim, hidden),
                 nn.GELU(),
                 nn.Dropout(float(head_cfg.get("dropout", 0.0))),
                 nn.Linear(hidden, 1),
@@ -93,7 +113,7 @@ class OcclusionRegressor(nn.Module):
             # Persist thresholds with the module so checkpoints stay self-contained.
             self.register_buffer("ordinal_thresholds", thresholds, persistent=True)
             self.ordinal_head = OrdinalHead(
-                in_features=int(self.backbone.num_features),
+                in_features=feat_dim,
                 num_thresholds=int(thresholds.numel()),
             )
         else:
@@ -222,4 +242,5 @@ def build_model(cfg, mean_target: float | None = None) -> OcclusionRegressor:
         img_size=int(img_size) if img_size is not None else None,
         lora=lora,
         head=head,
+        backbone_source=str(m.get("backbone_source", "timm")),
     )

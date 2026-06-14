@@ -1,0 +1,114 @@
+# DINOv2 ViT-B reg — FULL FINE-TUNE (Exp C2), the decisive capacity test.
+# Identical to 02_vit_b_reg_lora_full.yaml EXCEPT LoRA is OFF (the whole ~86M-param
+# backbone trains, like the fully-fine-tuned ConvNeXt) with a small backbone LR to avoid
+# wrecking the pretrained DINOv2 features, plus gradient clipping for full-FT stability.
+# Question: with full capacity, does DINOv2 reach/beat the ConvNeXt baseline (val 0.00129)?
+# If a fully-fine-tuned DINOv2 still loses, DINOv2 is not the right backbone for this task
+# and we focus on ConvNeXt + the tail. If it wins, capacity was the answer.
+# NOTE: backbone_lr (2e-5) and weight_decay are the main knobs to tune for full-FT.
+project:
+  name: face-occlusion-estimation
+  seed: 42
+  output_dir: outputs
+  deterministic: false
+experiment:
+  name: dinov2_vitb_reg_full_finetune
+  output_root: outputs/experiments
+  save_git_info: true
+  save_config: true
+  create_latest_pointer: true
+data:
+  train_csv: data/raw/occlusion_datasets/train.csv
+  test_csv: data/raw/occlusion_datasets/test_students.csv
+  image_root: data/raw/crops/Crop_224_5fp_100K
+  image_col: filename
+  target_col: FaceOcclusion
+  gender_col: gender
+  id_col: filename
+  female_value: 0.0
+  male_value: 1.0
+  submission_dummy_gender: 0
+  target_scale: auto
+  val_size: 0.2
+  num_workers: 8
+split:
+  strategy: row_stratified
+  occlusion_bins: [0.0, 0.05, 0.1, 0.2, 0.4, 0.6, 1.0]
+  split_path: outputs/splits/canonical_row_split.csv
+  val_size: 0.2
+  random_state: 42
+  stratify_by: [gender, occlusion_bin, database]
+  group_col: group_id
+  allow_missing_rows: false
+model:
+  backbone: vit_base_patch14_reg4_dinov2.lvd142m
+  pretrained: true
+  img_size: 224
+  output_activation: sigmoid
+  dropout: 0.0
+  use_ordinal_head: false
+  head:
+    type: mlp
+    hidden_dim: 256
+    dropout: 0.2
+  lora:
+    enabled: false                    # FULL fine-tune: whole backbone trains (was LoRA)
+losses:
+  regression:
+    type: gender_balanced
+    reweight: none
+  ordinal: {enabled: false}
+  consistency: {enabled: false}
+  monotonicity: {enabled: false}
+  ranking: {enabled: false}
+  triplet: {enabled: false}
+synthetic_occlusion:
+  enabled: false
+triplet_sampling:
+  enabled: false
+training:
+  batch_size: 64
+  max_epochs: 20
+  learning_rate: 2.0e-5               # fallback only; head_lr/backbone_lr drive the optimizer
+  head_lr: 1.0e-3                     # fresh MLP head: high LR
+  backbone_lr: 2.0e-5                 # full backbone: SMALL LR to preserve pretrained features
+  weight_decay: 1.0e-4               # on 2-D weights only; raise (e.g. 0.05) if it overfits
+  warmup_frac: 0.05                  # linear warmup -> per-step cosine
+  optimizer: adamw
+  scheduler: cosine
+  precision: bf16-mixed
+  float32_matmul_precision: high
+  gradient_clip_val: 1.0             # full-FT stability (LoRA runs used 0.0)
+  early_stopping_patience: 5
+augmentation:
+  resize: 224
+  horizontal_flip_p: 0.5
+  color_jitter_p: 1.0
+  brightness: 0.2
+  contrast: 0.2
+  saturation: 0.2
+  hue: 0.05
+  rotation_degrees: 0
+  background:
+    enabled: false
+inference:
+  tta: true
+logging:
+  use_wandb: false
+  wandb_project: face-occlusion-estimation
+  run_name: dinov2_vitb_reg_full_finetune
+  log_images: false
+  log_prediction_plots: true
+  log_images_every_n_epochs: 1
+  num_logged_images: 16
+sampler:
+  enabled: true
+  strategy: gender_occlusion_balanced_batch
+  target: bin_weights
+  balance_strength: 0.3
+  drop_last: true
+checkpoint:
+  monitor: val/score
+  mode: min
+  save_top_k: 1
+  filename: best
