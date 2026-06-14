@@ -1,0 +1,80 @@
+# Starter config. Copy this file for future model experiments and change
+# experiment.name plus model/training settings.
+project:
+  name: face-occlusion-estimation
+  seed: 42
+  output_dir: outputs
+
+experiment:
+  name: baseline-convnext-small
+  output_root: outputs/experiments
+  save_git_info: true
+  save_config: true
+  create_latest_pointer: true
+
+data:
+  train_csv: data/occlusion_datasets/train.csv
+  test_csv: data/occlusion_datasets/test_students.csv
+  image_root: data/crops/Crop_224_5fp_100K
+  image_col: filename
+  target_col: FaceOcclusion
+  gender_col: gender
+  id_col: filename            # no explicit id, use filename as unique id
+  # Dataset gender encoding: female=0, male=1.
+  female_value: 0.0
+  male_value: 1.0
+  submission_dummy_gender: 0
+  target_scale: auto          # auto | unit | percent
+  val_size: 0.2
+  num_workers: 4
+
+split:
+  strategy: row_stratified     # row_stratified | group_stratified
+  occlusion_bins: [0.0, 0.05, 0.10, 0.20, 0.40, 0.60, 1.0]
+  split_path: outputs/splits/canonical_row_split.csv
+  val_size: 0.2
+  random_state: 42
+  stratify_by: [gender, occlusion_bin, database]
+  group_col: group_id
+
+model:
+  backbone: convnext_small.fb_in22k_ft_in1k
+  pretrained: true
+  output_activation: identity   # identity | sigmoid
+  dropout: 0.0
+
+training:
+  batch_size: 64
+  max_epochs: 20
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  loss: weighted_mse
+  optimizer: adamw
+  scheduler: cosine
+  precision: 16-mixed
+  gradient_clip_val: 1.0
+  early_stopping_patience: 5
+
+augmentation:
+  resize: 224
+  horizontal_flip_p: 0.5
+  color_jitter_p: 0.5
+  brightness: 0.10
+  contrast: 0.10
+  saturation: 0.05
+  rotation_degrees: 3
+
+logging:
+  use_wandb: false
+  wandb_project: face-occlusion-estimation
+  run_name: baseline-convnext-small
+  log_images: true
+  log_prediction_plots: true
+  log_images_every_n_epochs: 1
+  num_logged_images: 16
+
+checkpoint:
+  monitor: val/score
+  mode: min
+  save_top_k: 1
+  filename: best

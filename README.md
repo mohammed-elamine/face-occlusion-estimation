@@ -119,14 +119,227 @@ $$
 The metric rewards low overall error, strong performance on highly occluded samples, and balanced errors across female and male subsets.
 
 
+## Getting Started
+
+1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you don't have it.
+
+2. Clone and set up:
+
+   ```bash
+   git clone https://github.com/mohammed-elamine/face-occlusion-estimation.git
+   cd face-occlusion-estimation
+   make install
+   ```
+
+3. Run `make help` to see all available commands.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and guidelines.
+For the full project architecture and workflow reference, see
+[docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md).
+
+
+## Config-Driven Pipeline
+
+The reusable training code lives under `src/face_occlusion/`. The current
+starter experiment is the ConvNeXt-Small baseline in
+[`configs/baseline.yaml`](configs/baseline.yaml), and future models should be
+added as new YAML configs.
+
+```bash
+# 1. Sanity-check the data (paths, columns, target range, image readability).
+python scripts/validate_data.py --config configs/baseline.yaml
+
+# Optional guided notebook:
+# notebooks/database3_identity_overlap.ipynb
+
+# 2. Create a fixed row-level gender x occlusion-bin x database split.
+python scripts/make_split.py --config configs/baseline.yaml
+
+# 3. Train a config. Each run gets its own folder under outputs/experiments/.
+python scripts/train.py --config configs/baseline.yaml
+
+# 4. Generate test predictions / submission file from the best checkpoint.
+python scripts/predict_test.py \
+  --config configs/baseline.yaml \
+  --checkpoint outputs/experiments/<run_id>/checkpoints/best.ckpt
+```
+
+When the checkpoint comes from an experiment folder, test predictions are saved
+back into that same run's `predictions/` directory.
+
+Design choices worth knowing:
+
+- **Backbone — `convnext_small.fb_in22k_ft_in1k`.** Strong ImageNet-22k features
+  with more capacity than Tiny for leaderboard-oriented experiments, while still
+  being practical on a single GPU. Easy to swap with any `timm` model via
+  `model.backbone` in the config.
+- **Augmentation is conservative.** We avoid RandomErasing, heavy blur,
+  random crops and synthetic occlusion: they change the *true* face
+  visibility while the original label stays the same, which silently
+  corrupts supervision. Only horizontal flip, mild color jitter and a
+  small rotation are used.
+- **Metric is gender-aware.** Validation reports the official score
+  `(Err_F + Err_M)/2 + |Err_F - Err_M|`, so we keep `gender` in every batch
+  and stratify the default validation split on `gender x occlusion_bin x database`.
+  Dataset encoding is `female=0`, `male=1`.
+- **Path metadata is preserved.** `database`, `source_subfolder`, `group_id`
+  and `face_id` are parsed from filenames for splits and diagnostics, not fed
+  into the image model.
+- **Two split protocols are supported.** `row_stratified` is the default for
+  leaderboard-oriented comparison; `group_stratified` is available for a
+  stricter robustness check with unseen `group_id` values. We do not train
+  every model twice by default.
+- **Database3 identity overlap can be inspected directly.** Open
+  `notebooks/database3_identity_overlap.ipynb` to quantify how many
+  `database3` `m.<id>` folders appear in both challenge train and test,
+  with tables and visuals.
+
+Validation predictions are written to
+`outputs/experiments/<run_id>/predictions/val_predictions.csv` for error
+analysis (per-sample target, raw and clipped predictions, absolute error,
+gender, path and parsed path metadata).
+
+Analyze a completed experiment folder with:
+
+```bash
+python scripts/analyze_val_predictions.py \
+  --experiment-dir outputs/experiments/<run_id>
+```
+
+This generates a complete post-analysis report under
+`outputs/experiments/<run_id>/reports/`:
+
+```text
+reports/
+├── report.html          — standalone HTML report (open in a browser)
+├── summary_metrics.json — key metrics as JSON
+├── tables/              — grouped metrics and error tables (CSV)
+├── plots/               — 15+ ordered diagnostic plots (PNG)
+│   ├── 01–15_*.png      — per-prediction analysis (error, bias, calibration…)
+│   ├── 20_training_global_metrics.png
+│   ├── 21_training_weighted_mse_by_occlusion_bin.png
+│   ├── 22_training_bias_by_occlusion_bin.png   (requires updated LitModule)
+│   ├── 23_training_weighted_mse_by_gender.png
+│   ├── 24_training_bias_by_gender.png          (requires updated LitModule)
+│   └── 25_training_weighted_mse_by_database.png
+└── samples/             — image grids of difficult examples (PNG)
+```
+
+When `--experiment-dir` contains a Lightning CSV logger metrics file
+(`logs/csv_logs/version_*/metrics.csv`), the script automatically generates
+training-dynamics plots (20–25) showing how validation metrics evolve per
+epoch broken down by occlusion bin, gender, and database.  Plots 22 and 24
+(per-subgroup bias over epochs) require the updated `FaceOcclusionLitModule`
+that logs `val/bin_*_bias` and `val/female_bias` / `val/male_bias`.
+
+Image grids are generated by default using
+`data/crops/Crop_224_5fp_100K` as the image root. To disable them or
+override the root:
+
+```bash
+# Disable image grids
+python scripts/analyze_val_predictions.py \
+  --experiment-dir outputs/experiments/<run_id> \
+  --no-image-grids
+
+# Custom image root
+python scripts/analyze_val_predictions.py \
+  --experiment-dir outputs/experiments/<run_id> \
+  --image-root /custom/path/to/Crop_224_5fp_100K
+```
+
+For a group-level robustness split, generate a separate split file and use a
+config that points to it:
+
+```bash
+python scripts/make_split.py \
+  --config configs/baseline.yaml \
+  --strategy group_stratified \
+  --split-path outputs/splits/group_robustness_split.csv
+```
+
+Then copy the model config and set `split.strategy: group_stratified` plus
+`split.split_path: outputs/splits/group_robustness_split.csv` before training.
+
+
+## Experiment Outputs
+
+Training is organized as:
+
+```text
+one run = one self-contained folder
+```
+
+At startup, `scripts/train.py` creates a unique directory such as:
+
+```text
+outputs/experiments/2026-05-29_031500_baseline-convnext-small/
+```
+
+Important artifacts live inside that folder:
+
+```text
+config.yaml
+metadata.json
+git_commit.txt
+git_status.txt
+checkpoints/best.ckpt
+checkpoints/last.ckpt
+logs/
+predictions/val_predictions.csv
+reports/
+splits/
+```
+
+The validation CSV is the main file to copy locally for post-analysis because
+it contains the metadata needed by the challenge metric: `image_id`, `path`,
+`gender`, `target`, raw predictions, clipped predictions and absolute error.
+
+
+## Cluster Training
+
+Set up the environment once from the repository root:
+
+```bash
+bash scripts/setup_cluster_env.sh
+```
+
+Launch the baseline config:
+
+```bash
+sbatch jobs/train.slurm
+```
+
+Launch a custom config:
+
+```bash
+CONFIG_PATH=configs/efficientnet_b3.yaml sbatch jobs/train.slurm
+```
+
+Slurm logs are saved under `outputs/slurm_logs/`. Experiment directories are
+created and managed by `scripts/train.py`, not by the Slurm script.
+
+
 ## Project Map
 
 ```text
 face-occlusion-estimation/
+├── .github/workflows/      # CI pipelines
 ├── assets/
 │   ├── illustrations/      # Public-domain cartoon and meme fuel
 │   └── logos/              # Challenge logos
 ├── data/                   # Local data folder, not tracked
+│   ├── occlusion_datasets/ # train.csv and test_students.csv
+│   └── crops/
+│       └── Crop_224_5fp_100K/
+│           ├── database1/
+│           ├── database2/
+│           └── database3/
+├── docs/                   # Detailed project guide
+├── scripts/                # Dev utility scripts
+├── src/face_occlusion/     # Main Python package
+├── Makefile                # Local dev commands (make help)
+├── pyproject.toml          # Project config & dependencies
 └── README.md
 ```
 
@@ -148,3 +361,12 @@ face-occlusion-estimation/
     <a href="https://openclipart.org/detail/168636/challenge-accepted">challenge accepted</a>
   </sub>
 </p>
+
+## Authors
+
+Built with caffeinated determination by:
+
+- **Mohammed Elamine** · [elamine.mohammed.14@gmail.com](mailto:elamine.mohammed.14@gmail.com)
+- **Sara El Mountassir** · [sara.elmountasser@telecom-paris.fr](mailto:sara.elmountasser@telecom-paris.fr)
+
+<sub>Two students vs. occluded faces. What could go wrong?</sub>
