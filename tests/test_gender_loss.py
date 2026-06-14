@@ -16,6 +16,16 @@ from face_occlusion.training.lit_module import (
 )
 
 
+class _AttrDict(dict):
+    """dict with attribute access + .get, mimicking the project's Config wrapper."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def __getattr__(self, k):
+        return self[k]
+
+
 def test_matches_challenge_metric_mean_term():
     # power=1, gap_lambda=0 must equal 0.5*(Err_F + Err_M) with the metric weight 1/30+y.
     torch.manual_seed(0)
@@ -83,8 +93,10 @@ def test_configure_optimizers_filters_frozen_params():
         prm.requires_grad = False
     module.add_module("_trainable", trainable)
     module.add_module("_frozen", frozen)
+    # training is dict-like (the real Config supports both attribute access and .get,
+    # which configure_optimizers uses to probe optional head_lr/backbone_lr/warmup_frac).
     module.cfg = SimpleNamespace(
-        training=SimpleNamespace(learning_rate=1e-3, weight_decay=0.0, max_epochs=5)
+        training=_AttrDict(learning_rate=1e-3, weight_decay=0.0, max_epochs=5)
     )
     opt = module.configure_optimizers()["optimizer"]
     n_opt = sum(p.numel() for grp in opt.param_groups for p in grp["params"])

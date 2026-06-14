@@ -1,14 +1,14 @@
-# Representation-first pivot: DINOv2 ViT-B/14 fine-tuned with LoRA, a gender-balanced
-# metric-weighted loss, regression head only, minimal label-preserving augmentation.
-# Everything occlusion-aware (sampler / synthetic / reweight / ordinal / bg-aug) is OFF.
-# Gate vs the ConvNeXt baseline with compare_experiments (paired-Δ + lenses + leakage-free).
+# DINOv2 ViT-B reg + LoRA — FULL recipe (mirrors the teammate's `lora_b_full`):
+# the plain recipe + label-preserving augmentation (hflip + jitter incl. hue),
+# the gender x occlusion sampler, and test-time augmentation. Run AFTER 01_plain
+# and gate each add-on with the eval suite.
 project:
   name: face-occlusion-estimation
   seed: 42
   output_dir: outputs
   deterministic: false
 experiment:
-  name: dinov2_vit_b_lora_gender_balanced
+  name: dinov2_vitb_reg_lora_full
   output_root: outputs/experiments
   save_git_info: true
   save_config: true
@@ -26,7 +26,7 @@ data:
   submission_dummy_gender: 0
   target_scale: auto
   val_size: 0.2
-  num_workers: 4
+  num_workers: 8
 split:
   strategy: row_stratified
   occlusion_bins: [0.0, 0.05, 0.1, 0.2, 0.4, 0.6, 1.0]
@@ -37,25 +37,25 @@ split:
   group_col: group_id
   allow_missing_rows: false
 model:
-  backbone: vit_base_patch14_dinov2.lvd142m
+  backbone: vit_base_patch14_reg4_dinov2.lvd142m
   pretrained: true
-  img_size: 224                 # ViT patch-14: 224 -> 16x16 grid (pos-embed interpolated)
-  output_activation: identity
+  img_size: 224
+  output_activation: sigmoid          # bounded [0,1] regression
   dropout: 0.0
   use_ordinal_head: false
-  use_projection_head: false
+  head:
+    type: mlp                         # LayerNorm -> Linear(d,256) -> GELU -> Dropout -> Linear(256,1)
+    hidden_dim: 256
+    dropout: 0.2
   lora:
     enabled: true
     rank: 16
     alpha: 32
     dropout: 0.05
-    target_modules: [attn.qkv, attn.proj, mlp.fc1, mlp.fc2]
-    modules_to_save: [head]
+    target_modules: [attn.qkv, attn.proj]   # attention only
 losses:
   regression:
-    type: gender_balanced       # per-gender weighted MSE -> mean
-    high_occ_power: 1.0         # 1.0 = exactly the metric weight (1/30 + y)
-    gender_gap_lambda: 0.0      # >0 adds |Err_F - Err_M| to the loss
+    type: gender_balanced             # per-gender weighted MSE -> mean (the metric)
     reweight: none
   ordinal: {enabled: false}
   consistency: {enabled: false}
@@ -67,37 +67,46 @@ synthetic_occlusion:
 triplet_sampling:
   enabled: false
 training:
-  batch_size: 64                # reduce if ViT-B activations OOM at 224
+  batch_size: 64
   max_epochs: 20
-  learning_rate: 5.0e-4         # LoRA-appropriate (higher than full-FT); key knob to tune
-  weight_decay: 0.01
-  loss: weighted_mse
+  learning_rate: 2.0e-4               # fallback only; head_lr/backbone_lr drive the optimizer
+  head_lr: 1.0e-3                     # fresh MLP head: higher LR
+  backbone_lr: 2.0e-4                 # LoRA adapters: lower LR
+  weight_decay: 1.0e-4               # applied to 2-D weights only
+  warmup_frac: 0.05                  # linear warmup -> per-step cosine
   optimizer: adamw
   scheduler: cosine
-  precision: bf16-mixed         # Ada/Ampere/Hopper: same speed as fp16, no loss-scaling NaNs
+  precision: bf16-mixed
   float32_matmul_precision: high
-  gradient_clip_val: 1.0
+  gradient_clip_val: 0.0
   early_stopping_patience: 5
 augmentation:
   resize: 224
-  horizontal_flip_p: 0.5
-  color_jitter_p: 0.5
-  brightness: 0.10
-  contrast: 0.10
-  saturation: 0.05
-  rotation_degrees: 0           # match the teammate's minimal aug
+  horizontal_flip_p: 0.5             # full: label-preserving augmentation on
+  color_jitter_p: 1.0
+  brightness: 0.2
+  contrast: 0.2
+  saturation: 0.2
+  hue: 0.05
+  rotation_degrees: 0
   background:
     enabled: false
+inference:
+  tta: true
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
-  run_name: dinov2_vit_b_lora_gender_balanced
-  log_images: true
+  run_name: dinov2_vitb_reg_lora_full
+  log_images: false
   log_prediction_plots: true
   log_images_every_n_epochs: 1
   num_logged_images: 16
 sampler:
-  enabled: false
+  enabled: true
+  strategy: gender_occlusion_balanced_batch
+  target: bin_weights        # gentle hand-tuned tail weighting (mild oversampling)
+  balance_strength: 0.3
+  drop_last: true
 checkpoint:
   monitor: val/score
   mode: min

@@ -14,7 +14,7 @@ from .background_augment import BackgroundAugment
 from .dataset import FaceOcclusionDataset
 from .face_mask_store import FaceMaskStore
 from .metadata import add_path_metadata
-from .samplers import build_batch_sampler_from_config
+from .samplers import build_batch_sampler_from_config, build_weighted_sampler_from_config
 from .splits import load_split, make_stratified_split, save_split
 from .synthetic_cache import SyntheticCache
 from .synthetic_occlusion import build_generator_from_config
@@ -226,6 +226,26 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
             return DataLoader(
                 self.train_ds,
                 batch_sampler=sampler,
+                num_workers=num_workers,
+                pin_memory=pin_memory,
+                persistent_workers=num_workers > 0,
+                worker_init_fn=seed_worker,
+            )
+        # Teammate-style per-sample WeightedRandomSampler: plugs in via sampler=
+        # (mutually exclusive with shuffle), keeping batch_size/drop_last.
+        weighted = build_weighted_sampler_from_config(
+            self.train_df, self.cfg, seed=int(self.cfg.project.seed)
+        )
+        if weighted is not None:
+            sampler_cfg = self.cfg.get("sampler", {})
+            drop_last = bool(sampler_cfg.get("drop_last", True))
+            num_workers = int(self.cfg.data.num_workers)
+            pin_memory = torch.cuda.is_available()
+            return DataLoader(
+                self.train_ds,
+                sampler=weighted,
+                batch_size=batch_size,
+                drop_last=drop_last,
                 num_workers=num_workers,
                 pin_memory=pin_memory,
                 persistent_workers=num_workers > 0,

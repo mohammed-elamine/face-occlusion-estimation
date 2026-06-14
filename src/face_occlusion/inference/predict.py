@@ -19,13 +19,15 @@ def predict_dataframe(
     loader: DataLoader,
     device: str = "cpu",
     recalibration: IsotonicMapping | None = None,
+    tta: bool = False,
 ) -> pd.DataFrame:
     """Run the model over ``loader`` and return one row per image.
 
     When ``recalibration`` is given, the monotonic map is applied to the *raw* prediction
     **before** clipping (so the calibrator sees the model's true under-prediction); the
     untouched model output is still kept in ``pred_raw``. ``recalibration=None`` (default)
-    reproduces the original behaviour byte-for-byte.
+    reproduces the original behaviour byte-for-byte. When ``tta`` is true, the raw prediction
+    is averaged over the image and its horizontal flip (label-preserving).
     """
     model.eval().to(device)
     rows: list[dict] = []
@@ -33,7 +35,11 @@ def predict_dataframe(
         images = batch["image"].to(device)
         # Models return a structured OcclusionModelOutput; the regression
         # score lives on ``y_pred``.
-        preds = model(images).y_pred.detach().cpu().numpy().reshape(-1)
+        out = model(images).y_pred.detach().float()
+        if tta:  # average over the image and its horizontal flip
+            flipped = model(torch.flip(images, dims=[3])).y_pred.detach().float()
+            out = 0.5 * (out + flipped)
+        preds = out.cpu().numpy().reshape(-1)
         recal = recalibration.apply(preds) if recalibration is not None else preds
         image_ids = list(batch["image_id"])
         filenames = list(batch["filename"])

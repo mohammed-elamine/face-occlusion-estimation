@@ -23,7 +23,8 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from torch.utils.data import Sampler
+import torch
+from torch.utils.data import Sampler, WeightedRandomSampler
 
 from .normalize import assign_occlusion_bin, normalize_target
 
@@ -530,6 +531,10 @@ def build_batch_sampler_from_config(
         return getattr(sampler_cfg, key, default)
 
     strategy = _get("strategy", "gender_occlusion_balanced_batch")
+    if strategy in _WEIGHTED_STRATEGIES:
+        # Per-sample WeightedRandomSampler strategies are built by
+        # build_weighted_sampler_from_config and used via DataLoader(sampler=...).
+        return None
     if strategy != "gender_occlusion_balanced_batch":
         raise ValueError(f"Unknown sampler strategy: {strategy!r}")
 
@@ -641,3 +646,131 @@ def _resolve_bin_weights(target, getter, targets: np.ndarray, bins: Sequence[flo
         targets, target_props, bins, clip_max=float(getter("clip_max", 10.0))
     )
     return {_bin_label(bins, i): float(weights[i]) for i in range(n_bins)}
+
+
+# ---------------------------------------------------------------------------
+# Teammate-style per-sample WeightedRandomSampler
+# ---------------------------------------------------------------------------
+#
+# A plain torch ``WeightedRandomSampler`` over per-sample weights, mirroring the
+# teammate's recipe. Unlike the batch sampler above it does NOT construct strata
+# or cap per-image exposure; it just draws indices with replacement in proportion
+# to ``w``. Used via ``DataLoader(sampler=..., batch_size=...)`` (not batch_sampler).
+
+_WEIGHTED_STRATEGIES = ("gender_occ_weighted",)
+_WEIGHTED_MODES = ("gender", "occ", "gender_occ", "cell")
+# Tail-aware bins for the ``cell`` mode (the extreme tail is its own cell).
+_CELL_BINS = [0.0, 0.05, 0.1, 0.2, 0.3, 1.01]
+
+
+def _inv_freq(series: pd.Series) -> np.ndarray:
+    """Inverse of each value's relative frequency (balances a marginal)."""
+    freq = series.map(series.value_counts(normalize=True)).to_numpy()
+    return 1.0 / np.clip(freq, 1e-12, None)
+
+
+def compute_weighted_sample_weights(
+    targets: np.ndarray,
+    genders: np.ndarray,
+    *,
+    mode: str = "gender_occ",
+    occ_power: float = 0.5,
+    occ_offset: float = 1.0 / 30.0,
+) -> np.ndarray:
+    """Per-sample sampling weights (mean-normalized), mirroring the teammate's sampler.
+
+    ``targets`` (occlusion) must already be normalized to [0, 1]. Modes:
+
+      * ``gender``     : inverse gender frequency (balance the gender marginal).
+      * ``occ``        : ``(1/30 + occ)^p`` -- oversample high occlusion.
+      * ``gender_occ`` : gender balance x occ (the teammate's best recipe).
+      * ``cell``       : inverse freq of the (gender x occ-bin) cell, raised to p.
+    """
+    occ = np.asarray(targets, dtype=float).reshape(-1)
+    g = pd.Series(np.asarray(genders, dtype=float).reshape(-1))
+    if mode == "gender":
+        w = _inv_freq(g)
+    elif mode == "occ":
+        w = (occ_offset + occ) ** occ_power
+    elif mode == "gender_occ":
+        w = _inv_freq(g) * (occ_offset + occ) ** occ_power
+    elif mode == "cell":
+        occ_bin = pd.cut(occ, _CELL_BINS, right=False).astype(str)
+        cell = pd.Series(g.astype(str).to_numpy() + "_" + np.asarray(occ_bin, dtype=object))
+        w = _inv_freq(cell) ** occ_power
+    else:
+        raise ValueError(
+            f"unknown weighted sampler mode: {mode!r}; expected one of {_WEIGHTED_MODES}"
+        )
+    w = np.asarray(w, dtype=float)
+    if not np.all(np.isfinite(w)) or w.sum() <= 0:
+        raise ValueError("Computed non-finite or non-positive sample weights.")
+    return w / w.mean()
+
+
+def build_weighted_sampler_from_config(
+    df: pd.DataFrame,
+    cfg: Any,
+    *,
+    seed: int | None = None,
+) -> WeightedRandomSampler | None:
+    """Build the teammate-style per-sample ``WeightedRandomSampler``, or ``None``.
+
+    Returns ``None`` when the sampler is disabled or the configured strategy is a
+    batch strategy (handled by :func:`build_batch_sampler_from_config`).
+    """
+    sampler_cfg = cfg.get("sampler", None) if hasattr(cfg, "get") else getattr(cfg, "sampler", None)
+    if sampler_cfg is None:
+        return None
+
+    def _get(key: str, default: Any = None) -> Any:
+        if hasattr(sampler_cfg, "get"):
+            return sampler_cfg.get(key, default)
+        return getattr(sampler_cfg, key, default)
+
+    enabled = bool(_get("enabled", False))
+    if not enabled:
+        return None
+    strategy = _get("strategy", "gender_occlusion_balanced_batch")
+    if strategy not in _WEIGHTED_STRATEGIES:
+        return None
+
+    data_cfg = cfg.get("data", {}) if hasattr(cfg, "get") else getattr(cfg, "data", {})
+
+    def _data_get(key: str, default: Any) -> Any:
+        if hasattr(data_cfg, "get"):
+            return data_cfg.get(key, default)
+        return getattr(data_cfg, key, default)
+
+    target_col = str(_get("target_col", _data_get("target_col", "FaceOcclusion")))
+    gender_col = str(_get("gender_col", _data_get("gender_col", "gender")))
+    target_scale = str(_get("target_scale", _data_get("target_scale", "auto")))
+    for col, key in ((target_col, "data.target_col"), (gender_col, "data.gender_col")):
+        if col not in df.columns:
+            raise KeyError(
+                f"Sampler requires column {col!r} (from cfg.{key}) but it is not present in "
+                f"the training dataframe. Available columns: {sorted(df.columns)}"
+            )
+
+    # Normalize the target to [0, 1] so the (1/30 + occ) weighting matches the metric
+    # even if the raw labels are percent-scaled.
+    targets = np.asarray(normalize_target(df[target_col], target_scale), dtype=float)
+    genders = df[gender_col].to_numpy(dtype=float)
+    _validate_genders(genders)
+
+    weights = compute_weighted_sample_weights(
+        targets,
+        genders,
+        mode=str(_get("mode", "gender_occ")),
+        occ_power=float(_get("occ_power", 0.5)),
+    )
+    num_samples = _get("num_samples", None)
+    n = int(num_samples) if num_samples else len(df)
+    sampler_seed = int(_get("seed", seed if seed is not None else 42))
+    generator = torch.Generator().manual_seed(sampler_seed)
+    return WeightedRandomSampler(
+        weights=torch.as_tensor(weights, dtype=torch.double),
+        num_samples=n,
+        replacement=True,
+        generator=generator,
+    )

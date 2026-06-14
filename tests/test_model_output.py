@@ -55,6 +55,8 @@ def _make_regressor(
     model = OcclusionRegressor.__new__(OcclusionRegressor)
     nn.Module.__init__(model)
     model.output_activation = activation
+    model.head_type = "linear"
+    model.head = None  # linear path: head lives inside the timm backbone
     model.backbone = _TinyBackbone()
     model.use_ordinal_head = bool(use_ordinal_head)
     if use_ordinal_head:

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
 import pytorch_lightning as pl
 import torch
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 
 from ..metrics.challenge_metric import (
     challenge_score,
@@ -1090,13 +1091,39 @@ class FaceOcclusionLitModule(pl.LightningModule):
 
     # ------------------------------------------------------------------
     def configure_optimizers(self):
-        # Optimise only trainable params so LoRA (frozen backbone) trains just the
-        # adapters + head. Full fine-tuning is unaffected (all params require grad).
-        trainable = [p for p in self.parameters() if p.requires_grad]
-        opt = AdamW(
-            trainable,
-            lr=float(self.cfg.training.learning_rate),
-            weight_decay=float(self.cfg.training.weight_decay),
-        )
-        scheduler = CosineAnnealingLR(opt, T_max=int(self.cfg.training.max_epochs))
+        tcfg = self.cfg.training
+        head_lr = tcfg.get("head_lr", None)
+        backbone_lr = tcfg.get("backbone_lr", None)
+        weight_decay = float(tcfg.get("weight_decay", 0.0))
+
+        # Discriminative LRs (head vs backbone/LoRA) + WD-on-2D-only when both LRs are set
+        # and the model supports param groups; otherwise the single-LR path (unchanged).
+        if head_lr is not None and backbone_lr is not None and hasattr(self.model, "param_groups"):
+            opt = AdamW(
+                self.model.param_groups(
+                    head_lr=float(head_lr),
+                    backbone_lr=float(backbone_lr),
+                    weight_decay=weight_decay,
+                )
+            )
+        else:
+            trainable = [p for p in self.parameters() if p.requires_grad]
+            opt = AdamW(trainable, lr=float(tcfg.learning_rate), weight_decay=weight_decay)
+
+        # Per-step linear-warmup -> cosine when warmup_frac is set; else per-epoch cosine.
+        warmup_frac = tcfg.get("warmup_frac", None)
+        if warmup_frac is not None:
+            total_steps = max(1, int(self.trainer.estimated_stepping_batches))
+            warmup_steps = max(1, int(total_steps * float(warmup_frac)))
+
+            def lr_lambda(step: int) -> float:
+                if step < warmup_steps:
+                    return step / warmup_steps
+                progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+                return 0.5 * (1.0 + math.cos(math.pi * progress))
+
+            sched = LambdaLR(opt, lr_lambda)
+            return {"optimizer": opt, "lr_scheduler": {"scheduler": sched, "interval": "step"}}
+
+        scheduler = CosineAnnealingLR(opt, T_max=int(tcfg.max_epochs))
         return {"optimizer": opt, "lr_scheduler": scheduler}

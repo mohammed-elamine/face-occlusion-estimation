@@ -28,7 +28,7 @@ def build_train_transform(cfg) -> transforms.Compose:
                         brightness=float(aug.brightness),
                         contrast=float(aug.contrast),
                         saturation=float(aug.saturation),
-                        hue=0.0,
+                        hue=float(aug.get("hue", 0.0)),
                     )
                 ],
                 p=float(aug.color_jitter_p),

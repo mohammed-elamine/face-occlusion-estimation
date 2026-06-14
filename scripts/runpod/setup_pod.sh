@@ -8,18 +8,33 @@ set -euo pipefail
 # This script:
 # 1. Bootstraps GitHub SSH access using /workspace/scripts/bootstrap_runtime_ssh.sh.
 # 2. Clones or updates the private GitHub repo.
-# 3. Keeps repo-level data/ and outputs/ folders intact.
-# 4. Links only remote/persistent folders:
+# 3. Checks out the requested branch (--branch); the env (uv.lock/deps) is
+#    branch-specific, so this drives which dependencies get installed.
+# 4. Keeps repo-level data/ and outputs/ folders intact.
+# 5. Links only remote/persistent folders:
 #       data/raw
 #       outputs/experiments
 #       outputs/runpod_logs
-# 5. Preserves outputs/splits as a normal repo folder, because training reads it.
-# 6. Installs useful system packages.
-# 7. Installs dependencies with uv.
-# 8. Checks GPU and PyTorch CUDA availability.
+# 6. Preserves outputs/splits as a normal repo folder, because training reads it.
+# 7. Installs useful system packages.
+# 8. Installs dependencies with uv (optional extras via --extra).
+# 9. Checks GPU and PyTorch CUDA availability.
 #
 # Usage:
-#   bash /workspace/scripts/setup_pod.sh
+#   bash /workspace/scripts/setup_pod.sh [--branch <name>] [--extra <name> ...]
+#
+#   --branch, -b <name>   Branch to check out and sync (default: current/clone default).
+#   --extra,  -e <name>   Optional dependency extra to install; repeatable
+#                         (e.g. --extra synthetic --extra wandb).
+#   --help,   -h          Show this help and exit.
+#
+# Env-var overrides (flags take precedence):
+#   BRANCH=<name>         Same as --branch.
+#   EXTRAS="a b"          Space-separated extras, same as repeated --extra.
+#
+# Examples:
+#   bash setup_pod.sh --branch feat/lora
+#   bash setup_pod.sh -b main --extra synthetic
 #
 # ============================================================
 
@@ -30,8 +45,79 @@ REPO_URL="git@github-face-occlusion:mohammed-elamine/face-occlusion-estimation.g
 DATA_ROOT="/workspace/datasets/face-occlusion"
 OUTPUT_ROOT="/workspace/outputs/face-occlusion-estimation"
 
+# Persistent uv cache + project environment on the /workspace volume. These MUST
+# match run_experiment.sh and sync_repo_to_remote.sh so the install done here warms
+# the exact cache + venv those scripts reuse (default cache is /root/.cache/uv,
+# which is ephemeral, and the default .venv would be a separate environment).
+export UV_LINK_MODE="copy"
+export UV_CACHE_DIR="/workspace/cache/uv"
+export UV_PROJECT_ENVIRONMENT="/workspace/venvs/face-occlusion-estimation"
+
 SCRIPTS_DIR="/workspace/scripts"
 BOOTSTRAP_SSH_SCRIPT="${SCRIPTS_DIR}/bootstrap_runtime_ssh.sh"
+
+# ============================================================
+# Parse arguments
+# ============================================================
+#
+# The dependency environment is branch-specific (each branch carries its own
+# pyproject.toml / uv.lock), so the branch and any optional extras are explicit
+# inputs rather than whatever `git clone` happened to leave checked out.
+
+BRANCH="${BRANCH:-}"
+# Seed extras from the EXTRAS env var (space-separated); flags append to this.
+read -r -a EXTRAS <<< "${EXTRAS:-}"
+
+usage() {
+    cat <<'EOF'
+Usage: setup_pod.sh [--branch <name>] [--extra <name> ...]
+
+  --branch, -b <name>   Branch to check out and sync (default: current/clone default).
+                        The env (uv.lock/deps) is branch-specific, so this drives
+                        which dependencies get installed.
+  --extra,  -e <name>   Optional dependency extra to install; repeatable
+                        (e.g. --extra synthetic --extra wandb).
+  --help,   -h          Show this help and exit.
+
+Env-var overrides (flags take precedence):
+  BRANCH=<name>         Same as --branch.
+  EXTRAS="a b"          Space-separated extras, same as repeated --extra.
+
+Examples:
+  bash setup_pod.sh --branch feat/lora
+  bash setup_pod.sh -b main --extra synthetic
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -b|--branch)
+            [ "$#" -ge 2 ] || { echo "ERROR: $1 requires a value"; exit 2; }
+            BRANCH="$2"
+            shift 2
+            ;;
+        -e|--extra)
+            [ "$#" -ge 2 ] || { echo "ERROR: $1 requires a value"; exit 2; }
+            EXTRAS+=("$2")
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "ERROR: unknown argument: $1"
+            echo "Run with --help for usage."
+            exit 2
+            ;;
+    esac
+done
+
+# Build the `uv sync` extra flags once (e.g. --extra synthetic --extra wandb).
+UV_EXTRA_ARGS=()
+for _extra in "${EXTRAS[@]:-}"; do
+    [ -n "${_extra}" ] && UV_EXTRA_ARGS+=(--extra "${_extra}")
+done
 
 # ============================================================
 # Helper: safely create or update a symlink
@@ -142,15 +228,30 @@ if [ ! -d "${REPO_DIR}/.git" ]; then
     echo "  ${REPO_DIR}"
 else
     echo "==> Repository already exists."
-
-    cd "${REPO_DIR}"
-    echo "==> Pulling latest changes..."
-    git pull
 fi
 
 cd "${REPO_DIR}"
 
+# Make remote branches/commits known before checking out or fast-forwarding.
+echo "==> Fetching remote..."
+git fetch --all --prune || true
+
+# The branch determines which pyproject.toml / uv.lock (and thus which deps) get
+# synced below, so check it out explicitly when requested.
+if [ -n "${BRANCH}" ]; then
+    echo "==> Checking out branch: ${BRANCH}"
+    git checkout "${BRANCH}"
+    echo "==> Fast-forwarding ${BRANCH}..."
+    git pull --ff-only origin "${BRANCH}" \
+        || echo "WARNING: could not fast-forward ${BRANCH}; staying at current commit."
+else
+    echo "==> No --branch given; fast-forwarding current branch..."
+    git pull --ff-only \
+        || echo "WARNING: could not fast-forward; staying at current commit."
+fi
+
 echo
+echo "==> On branch: $(git rev-parse --abbrev-ref HEAD)"
 echo "==> Git status:"
 git status --short || true
 
@@ -257,7 +358,18 @@ if [ ! -f "pyproject.toml" ]; then
     exit 1
 fi
 
-uv sync
+# Ensure the persistent cache/venv locations exist before syncing into them.
+mkdir -p "${UV_CACHE_DIR}"
+mkdir -p "$(dirname "${UV_PROJECT_ENVIRONMENT}")"
+echo "    UV_CACHE_DIR=${UV_CACHE_DIR}"
+echo "    UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
+
+if [ "${#UV_EXTRA_ARGS[@]}" -gt 0 ]; then
+    echo "    extras: ${EXTRAS[*]}"
+    uv sync "${UV_EXTRA_ARGS[@]}"
+else
+    uv sync
+fi
 
 # ============================================================
 # 7. Check GPU and PyTorch CUDA

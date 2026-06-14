@@ -35,15 +35,31 @@ class OcclusionRegressor(nn.Module):
         ordinal_thresholds: Sequence[float] = DEFAULT_ORDINAL_THRESHOLDS,
         img_size: int | None = None,
         lora: dict | None = None,
+        head: dict | None = None,
     ) -> None:
         super().__init__()
         if output_activation not in {"identity", "sigmoid"}:
             raise ValueError(f"output_activation must be identity|sigmoid, got {output_activation}")
         self.output_activation = output_activation
+
+        head_cfg = dict(head) if head else {}
+        self.head_type = str(head_cfg.get("type", "linear"))
+        if self.head_type not in {"linear", "mlp"}:
+            raise ValueError(f"model.head.type must be linear|mlp, got {self.head_type!r}")
+        mlp_head = self.head_type == "mlp"
+
+        self.use_ordinal_head = bool(use_ordinal_head)
+        lora_enabled = bool(lora.get("enabled", False)) if lora else False
+        if self.use_ordinal_head and (mlp_head or lora_enabled):
+            raise ValueError(
+                "The ordinal head is only supported with model.head.type=linear and LoRA off."
+            )
+
         create_kwargs: dict = dict(
             pretrained=pretrained,
-            # num_classes=1 replaces the classifier with a scalar regression head.
-            num_classes=1,
+            # mlp head: backbone is a pure feature extractor (num_classes=0).
+            # linear head: timm's own classifier with num_classes=1 (Stage 0 behaviour).
+            num_classes=0 if mlp_head else 1,
             drop_rate=float(dropout),
         )
         if img_size is not None:
@@ -52,15 +68,24 @@ class OcclusionRegressor(nn.Module):
             create_kwargs["img_size"] = int(img_size)
             create_kwargs["dynamic_img_size"] = True
         self.backbone = timm.create_model(backbone, **create_kwargs)
+
+        # Separate MLP regression head on the pooled features (mlp path). For the linear
+        # path the head lives inside the timm backbone (num_classes=1) and self.head is None.
+        if mlp_head:
+            d = int(self.backbone.num_features)
+            hidden = int(head_cfg.get("hidden_dim", 256))
+            self.head = nn.Sequential(
+                nn.LayerNorm(d),
+                nn.Linear(d, hidden),
+                nn.GELU(),
+                nn.Dropout(float(head_cfg.get("dropout", 0.0))),
+                nn.Linear(hidden, 1),
+            )
+        else:
+            self.head = None
+
         self._init_head_bias(mean_target)
 
-        self.use_ordinal_head = bool(use_ordinal_head)
-        lora_enabled = bool(lora.get("enabled", False)) if lora else False
-        if lora_enabled and self.use_ordinal_head:
-            raise ValueError(
-                "LoRA fine-tuning does not support the ordinal head yet "
-                "(set model.use_ordinal_head=false or model.lora.enabled=false)."
-            )
         if self.use_ordinal_head:
             thresholds = torch.tensor(list(ordinal_thresholds), dtype=torch.float32)
             if thresholds.numel() == 0:
@@ -75,7 +100,7 @@ class OcclusionRegressor(nn.Module):
             self.ordinal_head = None
 
         if lora_enabled:
-            self._wrap_lora(lora)
+            self._wrap_lora(lora, has_separate_head=mlp_head)
 
     def _init_head_bias(self, mean_target: float | None) -> None:
         # Warm-start the regression bias near the training mean so optimisation
@@ -88,29 +113,62 @@ class OcclusionRegressor(nn.Module):
             bias_value = math.log(m / (1 - m))  # logit
         else:
             bias_value = m
-        head = self.backbone.get_classifier()
-        if isinstance(head, nn.Linear) and head.bias is not None:
+        # The final Linear is the MLP head's last layer, or timm's classifier (linear path).
+        final = self.head[-1] if self.head is not None else self.backbone.get_classifier()
+        if isinstance(final, nn.Linear) and final.bias is not None:
             with torch.no_grad():
-                head.bias.fill_(bias_value)
+                final.bias.fill_(bias_value)
 
-    def _wrap_lora(self, lora: dict) -> None:
-        """Wrap the backbone with LoRA adapters; freeze the rest, keep the head trainable."""
+    def _wrap_lora(self, lora: dict, *, has_separate_head: bool) -> None:
+        """Wrap the backbone with LoRA adapters; freeze the rest.
+
+        With a separate MLP head (``self.head``) the head is already trainable and outside the
+        peft model, so no ``modules_to_save`` is needed. With the linear (in-backbone) head we
+        keep the classifier trainable via ``modules_to_save``.
+        """
         from peft import LoraConfig, get_peft_model
 
-        target_modules = list(
-            lora.get("target_modules", ["attn.qkv", "attn.proj", "mlp.fc1", "mlp.fc2"])
-        )
-        modules_to_save = list(lora.get("modules_to_save", ["head"]))
-        config = LoraConfig(
+        target_modules = list(lora.get("target_modules", ["attn.qkv", "attn.proj"]))
+        kwargs: dict = dict(
             r=int(lora.get("rank", 16)),
             lora_alpha=int(lora.get("alpha", 32)),
             lora_dropout=float(lora.get("dropout", 0.05)),
             bias="none",
             target_modules=target_modules,
-            # Without modules_to_save peft freezes the regression head too.
-            modules_to_save=modules_to_save,
         )
-        self.backbone = get_peft_model(self.backbone, config)
+        if not has_separate_head:
+            kwargs["modules_to_save"] = list(lora.get("modules_to_save", ["head"]))
+        self.backbone = get_peft_model(self.backbone, LoraConfig(**kwargs))
+
+    def param_groups(self, head_lr: float, backbone_lr: float, weight_decay: float = 0.0) -> list:
+        """Discriminative AdamW param groups: head at ``head_lr``, backbone/LoRA at
+        ``backbone_lr``; weight decay only on 2-D weights (none on LayerNorm/bias)."""
+
+        def split(params):
+            decay, no_decay = [], []
+            for p in params:
+                if p.requires_grad:
+                    (no_decay if p.ndim <= 1 else decay).append(p)
+            return decay, no_decay
+
+        if self.head is not None:  # mlp path: head is a separate module
+            head_params = list(self.head.parameters())
+            backbone_params = list(self.backbone.parameters())
+        else:  # linear path: the head is the timm classifier inside the backbone
+            clf_ids = {id(p) for p in self.backbone.get_classifier().parameters()}
+            head_params = [p for p in self.backbone.parameters() if id(p) in clf_ids]
+            backbone_params = [p for p in self.backbone.parameters() if id(p) not in clf_ids]
+        if self.ordinal_head is not None:
+            head_params += list(self.ordinal_head.parameters())
+
+        groups = []
+        for params, lr in ((head_params, head_lr), (backbone_params, backbone_lr)):
+            decay, no_decay = split(params)
+            if decay:
+                groups.append({"params": decay, "lr": lr, "weight_decay": weight_decay})
+            if no_decay:
+                groups.append({"params": no_decay, "lr": lr, "weight_decay": 0.0})
+        return groups
 
     def _apply_activation(self, raw: torch.Tensor) -> torch.Tensor:
         if self.output_activation == "sigmoid":
@@ -118,6 +176,12 @@ class OcclusionRegressor(nn.Module):
         return raw
 
     def forward(self, x: torch.Tensor) -> OcclusionModelOutput:
+        # MLP-head path: backbone (num_classes=0) -> pooled features -> separate MLP head.
+        if self.head is not None:
+            feat = self.backbone(x)
+            raw = self.head(feat).squeeze(-1)
+            return OcclusionModelOutput(y_pred=self._apply_activation(raw))
+
         # Fast path: with no auxiliary head we keep the exact Stage 0 call
         # (``self.backbone(x)``) so baseline runs stay bit-identical.
         if self.ordinal_head is None:
@@ -143,8 +207,10 @@ def build_model(cfg, mean_target: float | None = None) -> OcclusionRegressor:
     ordinal_thresholds = m.get("ordinal_thresholds", list(DEFAULT_ORDINAL_THRESHOLDS))
     img_size = m.get("img_size", None)
     lora = m.get("lora", None)
-    # Config objects are dict-like; pass a plain dict to OcclusionRegressor.
+    head = m.get("head", None)
+    # Config objects are dict-like; pass plain dicts to OcclusionRegressor.
     lora = dict(lora) if lora else None
+    head = dict(head) if head else None
     return OcclusionRegressor(
         backbone=m.backbone,
         pretrained=bool(m.pretrained),
@@ -155,4 +221,5 @@ def build_model(cfg, mean_target: float | None = None) -> OcclusionRegressor:
         ordinal_thresholds=list(ordinal_thresholds),
         img_size=int(img_size) if img_size is not None else None,
         lora=lora,
+        head=head,
     )

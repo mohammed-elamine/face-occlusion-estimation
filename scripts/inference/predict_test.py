@@ -61,6 +61,12 @@ def main() -> None:
             "to raw predictions before clipping. Omit for no recalibration."
         ),
     )
+    parser.add_argument(
+        "--tta",
+        action="store_true",
+        help="Test-time augmentation: average the prediction over the image + its hflip. "
+        "Defaults to the config's inference.tta.",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -82,7 +88,13 @@ def main() -> None:
 
         recalibration = load_mapping(args.recalibration)
         print(f"[predict] Applying recalibration: {args.recalibration}")
-    df = predict_dataframe(module.model, loader, device=device, recalibration=recalibration)
+    inference_cfg = cfg.get("inference", {}) if hasattr(cfg, "get") else {}
+    tta = bool(args.tta or (inference_cfg.get("tta", False) if inference_cfg else False))
+    if tta:
+        print("[predict] Test-time augmentation: image + horizontal flip")
+    df = predict_dataframe(
+        module.model, loader, device=device, recalibration=recalibration, tta=tta
+    )
 
     out_dir = (
         Path(args.output_dir) if args.output_dir else _default_output_dir(cfg, args.checkpoint)

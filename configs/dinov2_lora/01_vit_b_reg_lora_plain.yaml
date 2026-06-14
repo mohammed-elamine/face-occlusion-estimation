@@ -1,0 +1,110 @@
+# DINOv2 ViT-B register variant + LoRA, MLP head, sigmoid, discriminative LRs.
+# Mirrors the teammate's proven `lora_b_plain` recipe (the clean foundation: no sampler,
+# no augmentation, no TTA) so we can attribute the gain to the model/optimizer recipe.
+# Gate vs the ConvNeXt baseline with compare_experiments.
+project:
+  name: face-occlusion-estimation
+  seed: 42
+  output_dir: outputs
+  deterministic: false
+experiment:
+  name: dinov2_vitb_reg_lora_plain
+  output_root: outputs/experiments
+  save_git_info: true
+  save_config: true
+  create_latest_pointer: true
+data:
+  train_csv: data/raw/occlusion_datasets/train.csv
+  test_csv: data/raw/occlusion_datasets/test_students.csv
+  image_root: data/raw/crops/Crop_224_5fp_100K
+  image_col: filename
+  target_col: FaceOcclusion
+  gender_col: gender
+  id_col: filename
+  female_value: 0.0
+  male_value: 1.0
+  submission_dummy_gender: 0
+  target_scale: auto
+  val_size: 0.2
+  num_workers: 8
+split:
+  strategy: row_stratified
+  occlusion_bins: [0.0, 0.05, 0.1, 0.2, 0.4, 0.6, 1.0]
+  split_path: outputs/splits/canonical_row_split.csv
+  val_size: 0.2
+  random_state: 42
+  stratify_by: [gender, occlusion_bin, database]
+  group_col: group_id
+  allow_missing_rows: false
+model:
+  backbone: vit_base_patch14_reg4_dinov2.lvd142m
+  pretrained: true
+  img_size: 224
+  output_activation: sigmoid          # bounded [0,1] regression
+  dropout: 0.0
+  use_ordinal_head: false
+  head:
+    type: mlp                         # LayerNorm -> Linear(d,256) -> GELU -> Dropout -> Linear(256,1)
+    hidden_dim: 256
+    dropout: 0.2
+  lora:
+    enabled: true
+    rank: 16
+    alpha: 32
+    dropout: 0.05
+    target_modules: [attn.qkv, attn.proj]   # attention only
+losses:
+  regression:
+    type: gender_balanced             # per-gender weighted MSE -> mean (the metric)
+    reweight: none
+  ordinal: {enabled: false}
+  consistency: {enabled: false}
+  monotonicity: {enabled: false}
+  ranking: {enabled: false}
+  triplet: {enabled: false}
+synthetic_occlusion:
+  enabled: false
+triplet_sampling:
+  enabled: false
+training:
+  batch_size: 64
+  max_epochs: 20
+  learning_rate: 2.0e-4               # fallback only; head_lr/backbone_lr drive the optimizer
+  head_lr: 1.0e-3                     # fresh MLP head: higher LR
+  backbone_lr: 2.0e-4                 # LoRA adapters: lower LR
+  weight_decay: 1.0e-4               # applied to 2-D weights only
+  warmup_frac: 0.05                  # linear warmup -> per-step cosine
+  optimizer: adamw
+  scheduler: cosine
+  precision: bf16-mixed
+  float32_matmul_precision: high
+  gradient_clip_val: 0.0
+  early_stopping_patience: 5
+augmentation:
+  resize: 224
+  horizontal_flip_p: 0.0             # plain: augmentation off
+  color_jitter_p: 0.0
+  brightness: 0.0
+  contrast: 0.0
+  saturation: 0.0
+  hue: 0.0
+  rotation_degrees: 0
+  background:
+    enabled: false
+inference:
+  tta: false
+logging:
+  use_wandb: false
+  wandb_project: face-occlusion-estimation
+  run_name: dinov2_vitb_reg_lora_plain
+  log_images: false
+  log_prediction_plots: true
+  log_images_every_n_epochs: 1
+  num_logged_images: 16
+sampler:
+  enabled: false
+checkpoint:
+  monitor: val/score
+  mode: min
+  save_top_k: 1
+  filename: best
