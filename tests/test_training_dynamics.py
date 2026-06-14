@@ -9,10 +9,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# Make the scripts directory importable.
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-import _bootstrap  # noqa: F401, E402
-from analyze_val_predictions import (  # noqa: E402
+# Import analysis helpers without running the CLI.
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from scripts import _bootstrap  # noqa: F401, E402
+from scripts.analysis.analyze_val_predictions import (  # noqa: E402
     _find_metrics_csv,
     _read_training_metrics,
     _write_training_dynamics_plots,

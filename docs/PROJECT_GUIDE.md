@@ -34,8 +34,8 @@ configs/convnext_base.yaml
 The same scripts should continue to work:
 
 ```bash
-python scripts/train.py --config configs/your_config.yaml
-python scripts/predict_test.py --config configs/your_config.yaml --checkpoint <checkpoint>
+python -m scripts.training.train --config configs/your_config.yaml
+python -m scripts.inference.predict_test --config configs/your_config.yaml --checkpoint <checkpoint>
 ```
 
 ## Repository Structure
@@ -45,12 +45,13 @@ face-occlusion-estimation/
 |-- assets/                 # Logos and public README illustrations
 |-- configs/                # YAML experiment configs
 |-- data/                   # Local challenge data, ignored by git
-|   |-- occlusion_datasets/ # train.csv and test_students.csv
-|   `-- crops/
-|       `-- Crop_224_5fp_100K/
-|           |-- database1/
-|           |-- database2/
-|           `-- database3/
+|   `-- raw/
+|       |-- occlusion_datasets/ # train.csv and test_students.csv
+|       `-- crops/
+|           `-- Crop_224_5fp_100K/
+|               |-- database1/
+|               |-- database2/
+|               `-- database3/
 |-- docs/                   # Project-level documentation
 |-- jobs/                   # Slurm launchers and cluster notes
 |-- notebooks/              # Optional exploratory notebooks
@@ -116,7 +117,7 @@ a concrete way, keep the project simple.
 
 ## Configuration Logic
 
-Training is config-driven. The YAML config describes the data, model and training settings. The main training script (`scripts/train.py`) turns one config into one reproducible experiment folder with checkpoints, logs, predictions and reports.
+Training is config-driven. The YAML config describes the data, model and training settings. The main training script (`scripts/training/train.py`) turns one config into one reproducible experiment folder with checkpoints, logs, predictions and reports.
 
 Important sections:
 
@@ -149,14 +150,15 @@ The project follows the teacher-provided data layout:
 
 ```text
 data/
-|-- occlusion_datasets/
-|   |-- train.csv
-|   `-- test_students.csv
-`-- crops/
-    `-- Crop_224_5fp_100K/
-        |-- database1/
-        |-- database2/
-        `-- database3/
+`-- raw/
+    |-- occlusion_datasets/
+    |   |-- train.csv
+    |   `-- test_students.csv
+    `-- crops/
+        `-- Crop_224_5fp_100K/
+            |-- database1/
+            |-- database2/
+            `-- database3/
 ```
 
 CSV filenames remain relative paths such as
@@ -168,7 +170,7 @@ cfg.data.image_root / filename
 ```
 
 For the baseline config, `cfg.data.image_root` is
-`data/crops/Crop_224_5fp_100K`.
+`data/raw/crops/Crop_224_5fp_100K`.
 
 The exact column names come from the config:
 
@@ -252,7 +254,7 @@ reproducible even if the global split file changes later.
 To generate a group-level robustness split without changing the baseline split:
 
 ```bash
-python scripts/make_split.py \
+python -m scripts.data.make_split \
   --config configs/baseline.yaml \
   --strategy group_stratified \
   --split-path outputs/splits/group_robustness_split.csv
@@ -275,10 +277,10 @@ workflow.
 The main training entrypoint is:
 
 ```bash
-python scripts/train.py --config configs/baseline.yaml
+python -m scripts.training.train --config configs/baseline.yaml
 ```
 
-At startup, `scripts/train.py` creates:
+At startup, `scripts/training/train.py` creates:
 
 ```text
 outputs/experiments/<run_id>/
@@ -342,14 +344,14 @@ Use this CSV for error analysis without loading a checkpoint.
 For a lightweight post-analysis report:
 
 ```bash
-python scripts/analyze_val_predictions.py \
+python -m scripts.analysis.analyze_val_predictions \
   --experiment-dir outputs/experiments/<run_id>
 ```
 
 The explicit path mode is still supported:
 
 ```bash
-python scripts/analyze_val_predictions.py \
+python -m scripts.analysis.analyze_val_predictions \
   --predictions outputs/experiments/<run_id>/predictions/val_predictions.csv \
   --output-dir outputs/experiments/<run_id>/reports
 ```
@@ -359,7 +361,7 @@ plots. It reports metrics by gender, occlusion bin, database, database x
 occlusion bin, gender x occlusion bin and database x gender. If the run folder
 contains one split snapshot under `splits/`, or if you pass `--split-csv`, it
 also writes metrics by seen/unseen validation group. Use
-`--save-image-grids --image-root data/crops/Crop_224_5fp_100K` to add small
+`--save-image-grids --image-root data/raw/crops/Crop_224_5fp_100K` to add small
 qualitative grids of the
 largest errors.
 
@@ -393,7 +395,7 @@ calibration.
 Generate test predictions with:
 
 ```bash
-python scripts/predict_test.py \
+python -m scripts.inference.predict_test \
   --config configs/baseline.yaml \
   --checkpoint outputs/experiments/<run_id>/checkpoints/best.ckpt
 ```
@@ -420,7 +422,7 @@ column because the challenge upload format requires it.
 Set up the cluster environment once:
 
 ```bash
-bash scripts/setup_cluster_env.sh
+bash scripts/setup/setup_cluster_env.sh
 ```
 
 Launch the baseline:
@@ -436,7 +438,7 @@ CONFIG_PATH=configs/efficientnet_b3.yaml sbatch jobs/train.slurm
 ```
 
 The Slurm script only prepares the runtime and launches training. Experiment
-directory creation stays in `scripts/train.py`.
+directory creation stays in `scripts/training/train.py`.
 
 Slurm logs are separate from Lightning logs and are written to:
 
@@ -474,9 +476,9 @@ make setup-cluster  # Run cluster environment setup script
 Data utilities:
 
 ```bash
-python scripts/validate_data.py --config configs/baseline.yaml
-python scripts/make_split.py --config configs/baseline.yaml
-python scripts/make_split.py --config configs/baseline.yaml \
+python -m scripts.data.validate_data --config configs/baseline.yaml
+python -m scripts.data.make_split --config configs/baseline.yaml
+python -m scripts.data.make_split --config configs/baseline.yaml \
   --strategy group_stratified \
   --split-path outputs/splits/group_robustness_split.csv
 ```
@@ -507,5 +509,5 @@ config + data + split -> one reproducible experiment folder
 ```
 
 The Python package provides reusable building blocks. YAML configs describe
-specific experiments. `scripts/train.py` turns one config into one complete run
+specific experiments. `scripts/training/train.py` turns one config into one complete run
 folder that can be inspected locally or copied from the cluster.

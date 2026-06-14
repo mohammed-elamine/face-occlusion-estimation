@@ -1,0 +1,130 @@
+# Occlusion-aware contrastive learning Stage 1/2 ablation: ordinal head + symmetric consistency (Stage 2, safe default).
+project:
+  name: face-occlusion-estimation
+  seed: 42
+  output_dir: outputs
+
+experiment:
+  name: oacl_stage12_convnext_small_02_ordinal_consistency_symmetric
+  output_root: outputs/experiments
+  save_git_info: true
+  save_config: true
+  create_latest_pointer: true
+
+data:
+  train_csv: data/raw/occlusion_datasets/train.csv
+  test_csv: data/raw/occlusion_datasets/test_students.csv
+  image_root: data/raw/crops/Crop_224_5fp_100K
+  image_col: filename
+  target_col: FaceOcclusion
+  gender_col: gender
+  id_col: filename
+  female_value: 0.0
+  male_value: 1.0
+  submission_dummy_gender: 0
+  target_scale: auto
+  val_size: 0.2
+  num_workers: 4
+
+split:
+  strategy: row_stratified
+  occlusion_bins: [0.0, 0.05, 0.10, 0.20, 0.40, 0.60, 1.0]
+  split_path: outputs/splits/canonical_row_split.csv
+  val_size: 0.2
+  random_state: 42
+  stratify_by: [gender, occlusion_bin, database]
+  group_col: group_id
+
+model:
+  backbone: convnext_small.fb_in22k_ft_in1k
+  pretrained: true
+  output_activation: identity
+  dropout: 0.0
+  use_ordinal_head: true
+  use_projection_head: false
+  ordinal_thresholds: [0.05, 0.10, 0.20, 0.40, 0.60]
+
+losses:
+  ordinal:
+    enabled: true
+    weight: 0.2
+    warmup_epochs: 0
+    warmup_start_weight: 0.0
+    threshold_weights: [1.0, 1.0, 1.2, 2.0, 3.0]
+  consistency:
+    enabled: true
+    weight: 0.05
+    warmup_epochs: 0
+    warmup_start_weight: 0.0
+    temperature: 0.05
+    mode: symmetric
+  ranking:
+    enabled: false
+  triplet:
+    enabled: false
+
+synthetic_occlusion:
+  enabled: false
+
+triplet_sampling:
+  enabled: false
+
+training:
+  batch_size: 64
+  max_epochs: 20
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  loss: weighted_mse
+  optimizer: adamw
+  scheduler: cosine
+  precision: 16-mixed
+  float32_matmul_precision: high
+  gradient_clip_val: 1.0
+  early_stopping_patience: 5
+
+sampler:
+  enabled: true
+  strategy: gender_occlusion_balanced_batch
+  bins: [0.0, 0.05, 0.10, 0.20, 0.40, 0.60, 1.0]
+  bin_weights:
+    0.00_0.05: 1.0
+    0.05_0.10: 1.1
+    0.10_0.20: 1.2
+    0.20_0.40: 1.5
+    0.40_0.60: 2.0
+    0.60_1.00: 2.5
+  balance_strength: 0.3
+  gender_balance_strength: 0.5
+  max_stratum_weight: 8.0
+  min_stratum_size: 5
+  size_aware_weighting: true
+  reliable_stratum_size: 20
+  max_repeats_per_image: 10
+  tiny_stratum_policy: cap
+  drop_last: false
+  num_samples: null
+  seed: 42
+
+augmentation:
+  resize: 224
+  horizontal_flip_p: 0.5
+  color_jitter_p: 0.5
+  brightness: 0.10
+  contrast: 0.10
+  saturation: 0.05
+  rotation_degrees: 3
+
+logging:
+  use_wandb: false
+  wandb_project: face-occlusion-estimation
+  run_name: oacl_stage12_convnext_small_02_ordinal_consistency_symmetric
+  log_images: true
+  log_prediction_plots: true
+  log_images_every_n_epochs: 1
+  num_logged_images: 16
+
+checkpoint:
+  monitor: val/score
+  mode: min
+  save_top_k: 1
+  filename: best

@@ -14,7 +14,9 @@ def predict_dataframe(model, loader: DataLoader, device: str = "cpu") -> pd.Data
     rows: list[dict] = []
     for batch in loader:
         images = batch["image"].to(device)
-        preds = model(images).detach().cpu().numpy().reshape(-1)
+        # Models return a structured OcclusionModelOutput; the regression
+        # score lives on ``y_pred``.
+        preds = model(images).y_pred.detach().cpu().numpy().reshape(-1)
         image_ids = list(batch["image_id"])
         filenames = list(batch["filename"])
         paths = list(batch["path"])

@@ -31,10 +31,10 @@ CONFIG_PATH=configs/efficientnet_b3.yaml sbatch jobs/train.slurm
 `jobs/train.slurm` only prepares the cluster runtime and launches:
 
 ```bash
-python scripts/train.py --config "$CONFIG_PATH"
+python -m scripts.training.train --config "$CONFIG_PATH"
 ```
 
-The experiment directory is created by `scripts/train.py` under:
+The experiment directory is created by `scripts/training/train.py` under:
 
 ```text
 outputs/experiments/<run_id>/
@@ -50,9 +50,9 @@ outputs/slurm_logs/
 
 ```bash
 git pull --ff-only
-bash scripts/setup_cluster_env.sh
-python scripts/validate_data.py --config configs/baseline.yaml
-python scripts/make_split.py --config configs/baseline.yaml
+bash scripts/setup/setup_cluster_env.sh
+python -m scripts.data.validate_data --config configs/baseline.yaml
+python -m scripts.data.make_split --config configs/baseline.yaml
 sbatch jobs/train.slurm
 CONFIG_PATH=configs/efficientnet_b3.yaml sbatch jobs/train.slurm
 ```

@@ -15,14 +15,14 @@ help: ## Show this help message
 # -- Setup --------------------------------------------------------------
 
 check-setup: ## Verify prerequisites (uv, Python, etc.)
-	@bash scripts/check_setup.sh
+	@bash scripts/setup/check_setup.sh
 
 install: check-setup ## Install project + dev dependencies with uv
 	uv sync --group dev
 	uv run pre-commit install
 
 setup-cluster: ## Set up the Python environment on a Slurm/GPU cluster
-	@bash scripts/setup_cluster_env.sh
+	@bash scripts/setup/setup_cluster_env.sh
 
 # -- Code quality --------------------------------------------------------
 

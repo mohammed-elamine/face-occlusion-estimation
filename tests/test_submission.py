@@ -1,7 +1,7 @@
 """Tests for challenge submission generation."""
 
 import pandas as pd
-from scripts.predict_test import build_submission
+from scripts.inference.predict_test import build_submission
 
 from face_occlusion.utils import Config
 

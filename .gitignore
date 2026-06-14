@@ -1,26 +1,8 @@
 # Data directory
 data/**
+!data/
 !data/.gitkeep
-!data/occlusion_datasets/
-!data/occlusion_datasets/.gitkeep
-!data/crops/
-!data/crops/.gitkeep
-!data/crops/Crop_224_5fp_100K/
-!data/crops/Crop_224_5fp_100K/.gitkeep
-!data/crops/Crop_224_5fp_100K/database1/
-!data/crops/Crop_224_5fp_100K/database1/.gitkeep
-!data/crops/Crop_224_5fp_100K/database2/
-!data/crops/Crop_224_5fp_100K/database2/.gitkeep
-!data/crops/Crop_224_5fp_100K/database2/database2/
-!data/crops/Crop_224_5fp_100K/database2/database2/.gitkeep
-!data/crops/Crop_224_5fp_100K/database2/database2/train/
-!data/crops/Crop_224_5fp_100K/database2/database2/train/.gitkeep
-!data/crops/Crop_224_5fp_100K/database2/database2/test/
-!data/crops/Crop_224_5fp_100K/database2/database2/test/.gitkeep
-!data/crops/Crop_224_5fp_100K/database3/
-!data/crops/Crop_224_5fp_100K/database3/.gitkeep
-!data/crops/Crop_224_5fp_100K/database3/database3/
-!data/crops/Crop_224_5fp_100K/database3/database3/.gitkeep
+
 
 # Python
 __pycache__/
@@ -30,12 +12,15 @@ dist/
 build/
 *.egg
 
+
 # Virtual environments
 .venv/
 venv/
 
+
 # Ruff
 .ruff_cache/
+
 
 # IDE
 .idea/
@@ -44,37 +29,66 @@ venv/
 *.swo
 *~
 
+
 # OS
 .DS_Store
 Thumbs.db
 
+
 # Jupyter
 .ipynb_checkpoints/
 
-# PyTorch
+
+# PyTorch / model artifacts
 *.pt
 *.pth
 *.ckpt
+*.onnx
 
-# Logs
+
+# Logs and experiment trackers
 *.log
 runs/
 wandb/
 
-# Outputs and experiment artifacts (keep folder layout via .gitkeep sentinels)
-outputs/**
-!outputs/.gitkeep
-!outputs/experiments/
-!outputs/experiments/.gitkeep
-!outputs/slurm_logs/
-!outputs/slurm_logs/.gitkeep
-!outputs/splits/
-!outputs/splits/.gitkeep
 
-# temporary files
+# Outputs and experiment artifacts
+outputs/**
+!outputs/
+!outputs/.gitkeep
+
+# Generated experiments: ignore contents, keep placeholder
+!outputs/experiments/
+outputs/experiments/**
+!outputs/experiments/.gitkeep
+
+# Generated RunPod logs: ignore contents, keep placeholder
+!outputs/runpod_logs/
+outputs/runpod_logs/**
+!outputs/runpod_logs/.gitkeep
+
+# Generated Slurm logs: ignore contents, keep placeholder
+!outputs/slurm_logs/
+outputs/slurm_logs/**
+!outputs/slurm_logs/.gitkeep
+
+# Keep split files tracked because training needs them
+!outputs/splits/
+!outputs/splits/**
+
+
+# Temporary files
 tmp/
+
 
 # Slurm logs
 *.out
 *.err
 slurm-*.out
+
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz

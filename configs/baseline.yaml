@@ -13,9 +13,9 @@ experiment:
   create_latest_pointer: true
 
 data:
-  train_csv: data/occlusion_datasets/train.csv
-  test_csv: data/occlusion_datasets/test_students.csv
-  image_root: data/crops/Crop_224_5fp_100K
+  train_csv: data/raw/occlusion_datasets/train.csv
+  test_csv: data/raw/occlusion_datasets/test_students.csv
+  image_root: data/raw/crops/Crop_224_5fp_100K
   image_col: filename
   target_col: FaceOcclusion
   gender_col: gender
@@ -42,6 +42,40 @@ model:
   pretrained: true
   output_activation: identity   # identity | sigmoid
   dropout: 0.0
+  # Roadmap flags (see docs/occlusion_aware_contrastive_learning_approach.md).
+  # Default keeps the Stage 0 baseline behavior.
+  use_ordinal_head: false
+  use_projection_head: false
+  # Stage 1: ordinal-head thresholds used when use_ordinal_head=true.
+  # Each threshold t_k corresponds to a logit predicting P(y > t_k).
+  ordinal_thresholds: [0.05, 0.10, 0.20, 0.40, 0.60]
+
+# Multi-task loss components for later stages.
+# Disabled by default; only the regression loss above is active.
+losses:
+  ordinal:
+    enabled: false
+    weight: 0.2                    # lambda_ord in loss_total = loss_reg + lambda_ord * loss_ord
+    warmup_epochs: 0               # 0 disables warmup; >0 ramps from warmup_start_weight to weight
+    warmup_start_weight: 0.0
+    threshold_weights: [1.0, 1.0, 1.2, 2.0, 3.0]  # per-threshold BCE weights
+  consistency:
+    enabled: false
+    weight: 0.05                    # lambda_cons in loss_total
+    warmup_epochs: 0
+    warmup_start_weight: 0.0
+    temperature: 0.05               # sharpness of regression-implied threshold probs
+    mode: symmetric                 # symmetric | ordinal_as_teacher | regression_as_teacher
+  ranking:
+    enabled: false
+  triplet:
+    enabled: false
+
+synthetic_occlusion:
+  enabled: false
+
+triplet_sampling:
+  enabled: false
 
 training:
   batch_size: 64
@@ -52,6 +86,7 @@ training:
   optimizer: adamw
   scheduler: cosine
   precision: 16-mixed
+  float32_matmul_precision: high
   gradient_clip_val: 1.0
   early_stopping_patience: 5
 
@@ -72,6 +107,29 @@ logging:
   log_prediction_plots: true
   log_images_every_n_epochs: 1
   num_logged_images: 16
+
+sampler:
+  enabled: false
+  strategy: gender_occlusion_balanced_batch
+  bins: [0.0, 0.05, 0.10, 0.20, 0.40, 0.60, 1.0]
+  bin_weights:
+    0.00_0.05: 1.0
+    0.05_0.10: 1.1
+    0.10_0.20: 1.2
+    0.20_0.40: 1.5
+    0.40_0.60: 2.0
+    0.60_1.00: 2.5
+  balance_strength: 0.3
+  gender_balance_strength: 0.5
+  max_stratum_weight: 8.0
+  min_stratum_size: 5
+  size_aware_weighting: true
+  reliable_stratum_size: 20
+  max_repeats_per_image: 10
+  tiny_stratum_policy: cap
+  drop_last: false
+  num_samples: null
+  seed: 42
 
 checkpoint:
   monitor: val/score
