@@ -89,6 +89,43 @@ def threshold_weighted_bce(
     return per_elem.mean()
 
 
+def ordinal_monotonicity_loss(ordinal_logits: torch.Tensor) -> torch.Tensor:
+    """Hinge penalty for non-monotone ordinal probabilities (doc §7).
+
+    Threshold probabilities must be non-increasing, because ``P(y > t_k)``
+    can only drop as ``t_k`` grows::
+
+        q_{i,1} >= q_{i,2} >= ... >= q_{i,K}
+
+    where ``q_ik = sigmoid(ordinal_logits_ik)``. We penalize any increase::
+
+        L = mean_{i,k} relu(q_{i,k+1} - q_{i,k})
+
+    This is a soft regulariser kept at a small weight; it nudges the ordinal
+    head toward valid (monotone) outputs without hard-constraining it. Returns a
+    zero scalar when there are fewer than two thresholds.
+    """
+    if ordinal_logits.shape[-1] < 2:
+        return ordinal_logits.new_zeros(())
+    q = torch.sigmoid(ordinal_logits)
+    # diffs <= 0 everywhere when perfectly monotone.
+    diffs = q[..., 1:] - q[..., :-1]
+    return torch.relu(diffs).mean()
+
+
+def ordinal_monotonicity_violation_rate(ordinal_logits: torch.Tensor) -> torch.Tensor:
+    """Fraction of adjacent threshold pairs that are non-monotone (``q_{k+1} > q_k``).
+
+    A pure diagnostic (no gradient role): 0.0 means every sample's thresholds
+    are correctly ordered. Returns a zero scalar for fewer than two thresholds.
+    """
+    if ordinal_logits.shape[-1] < 2:
+        return ordinal_logits.new_zeros(())
+    q = torch.sigmoid(ordinal_logits)
+    diffs = q[..., 1:] - q[..., :-1]
+    return (diffs > 0).to(torch.float32).mean()
+
+
 def as_tensor_1d(values: Iterable[float], dtype: torch.dtype = torch.float32) -> torch.Tensor:
     """Small helper to normalise a list/tuple of floats into a 1-D tensor."""
     return torch.tensor(list(values), dtype=dtype)

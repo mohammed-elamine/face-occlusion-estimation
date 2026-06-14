@@ -35,6 +35,34 @@ The full method is designed to address rare high-occlusion samples while preserv
 
 ---
 
+## Implementation status
+
+This document describes the full method; not all of it is built. Current state:
+
+| Component | Status | Where |
+|---|---|---|
+| Weighted regression `L_reg` | implemented | `training/lit_module.py` |
+| Ordinal head + loss `L_ord` | implemented (opt-in) | `models/ordinal.py` |
+| Regression–ordinal consistency `L_cons` | implemented (opt-in) | `models/ordinal.py` |
+| Monotonicity `L_mono` | implemented (opt-in) | `models/ordinal.py` |
+| Synthetic generation (Stage 3) | implemented | `data/synthetic_occlusion.py` |
+| Synthetic cache + cache-backed views | implemented | `data/synthetic_cache.py`, `scripts/data/build_synthetic_cache.py` |
+| Label-preserving background aug | implemented (opt-in) | `data/background_augment.py` |
+| Synthetic monotonic ranking `L_rank` | implemented (opt-in) | `models/ranking.py` |
+| Bootstrap CIs + dual-split evaluation | implemented | `scripts/analysis/bootstrap_metrics.py` |
+| MediaPipe coverage gate (bin×gender) | implemented | `scripts/analysis/generate_synthetic_occlusion_audit.py` |
+| Triplet contrastive `L_triplet` + projection head | roadmap (Stage 5, not built) | — |
+| Gender-aware triplet mining | roadmap (Stage 5, not built) | — |
+| Progressive encoder unfreezing | roadmap (not built) | — |
+
+So the objective `L_reg + λ_ord L_ord + λ_cons L_cons + λ_mono L_mono + λ_rank L_rank`
+is implemented (all auxiliaries default-off); the `L_triplet` term, the projection
+head, and gender-aware mining (§11–§12) remain roadmap. The `losses.triplet`,
+`triplet_sampling`, and `model.use_projection_head` config blocks are inert
+placeholders until then.
+
+---
+
 ## 2. Notation
 
 Let the real labeled dataset be:
@@ -439,6 +467,16 @@ However, the safest initial version is symmetric consistency with a small coeffi
 
 ## 9. Synthetic Occlusion Generation
 
+> **Implementation status (Stage 3):** the generator, MediaPipe-only face
+> region provider, acceptance-rejection sampler, dataset hooks, and visual
+> audit script are implemented. There is no runtime geometric fallback; if
+> MediaPipe fails or mask sanity checks fail, the pair is marked
+> `synthetic_valid=false`. See
+> [docs/synthetic_occlusion_generation.md](synthetic_occlusion_generation.md)
+> for the API, config schema, and audit procedure. Default configs ship
+> with `synthetic_occlusion.enabled=false` so training behaviour is
+> unchanged until Stage 4 opts in.
+
 The dataset contains few real high-occlusion images. To create additional supervision, we generate synthetic occlusions.
 
 The key principle is:
@@ -465,7 +503,7 @@ We do **not** need to know the exact synthetic scores. We only need the ordering
 
 Synthetic occlusions should be placed on the face, not randomly in the image background.
 
-A practical first implementation can use a face landmark model, such as MediaPipe Face Mesh / Face Landmarker, to estimate:
+The current runtime implementation uses MediaPipe Face Mesh to estimate:
 
 - face oval,
 - left eye region,
@@ -475,6 +513,9 @@ A practical first implementation can use a face landmark model, such as MediaPip
 - lower face region.
 
 From landmarks, construct binary masks or polygons for each region.
+If detection fails or the derived masks fail simple sanity checks, synthetic
+generation for that image is invalid. We do not replace such failures with
+geometric masks.
 
 A more advanced implementation can use face parsing / semantic segmentation models to obtain masks for facial components. However, a landmark-based solution is usually simpler, faster, and sufficient for controlled occluder placement.
 

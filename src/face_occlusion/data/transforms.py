@@ -50,3 +50,19 @@ def build_eval_transform(cfg) -> transforms.Compose:
             transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
         ]
     )
+
+
+def build_synthetic_view_transform(cfg) -> transforms.Compose:
+    """Tensor + normalize for synthetic views (no spatial augmentation).
+
+    Synthetic occluders are pasted *after* resizing the source image to the
+    training resolution, so we only need to convert to tensor and normalize
+    here. Spatial augmentation (flip/rotate) is deliberately skipped so the
+    ranking head sees the exact pixels the generator approved.
+    """
+    return transforms.Compose(
+        [
+            transforms.ToTensor(),
+            transforms.Normalize(IMAGENET_MEAN, IMAGENET_STD),
+        ]
+    )

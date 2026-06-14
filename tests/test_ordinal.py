@@ -8,6 +8,8 @@ import torch
 from face_occlusion.models.ordinal import (
     OrdinalHead,
     make_ordinal_targets,
+    ordinal_monotonicity_loss,
+    ordinal_monotonicity_violation_rate,
     threshold_weighted_bce,
 )
 
@@ -88,3 +90,34 @@ def test_ordinal_head_output_shape():
     head = OrdinalHead(in_features=16, num_thresholds=5)
     out = head(torch.randn(7, 16))
     assert out.shape == (7, 5)
+
+
+# ─── monotonicity ─────────────────────────────────────────────────────────────
+
+
+def test_monotonicity_loss_zero_when_monotone():
+    # Decreasing logits => decreasing probs => perfectly monotone => zero loss.
+    logits = torch.tensor([[3.0, 1.0, -1.0, -3.0]])
+    assert torch.allclose(ordinal_monotonicity_loss(logits), torch.zeros(()))
+    assert torch.allclose(ordinal_monotonicity_violation_rate(logits), torch.zeros(()))
+
+
+def test_monotonicity_loss_positive_when_violated():
+    # An increase at the second threshold violates monotonicity.
+    logits = torch.tensor([[0.0, 2.0, -1.0, -3.0]])
+    loss = ordinal_monotonicity_loss(logits)
+    assert loss > 0
+    # Exactly one of three adjacent pairs is non-monotone.
+    assert torch.allclose(ordinal_monotonicity_violation_rate(logits), torch.tensor(1.0 / 3.0))
+
+
+def test_monotonicity_loss_single_threshold_is_zero():
+    logits = torch.randn(5, 1)
+    assert torch.allclose(ordinal_monotonicity_loss(logits), torch.zeros(()))
+    assert torch.allclose(ordinal_monotonicity_violation_rate(logits), torch.zeros(()))
+
+
+def test_monotonicity_loss_is_differentiable():
+    logits = torch.tensor([[0.0, 2.0, -1.0]], requires_grad=True)
+    ordinal_monotonicity_loss(logits).backward()
+    assert logits.grad is not None and torch.any(logits.grad != 0)

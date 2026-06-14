@@ -133,6 +133,14 @@ def _make_module(*, ord_weight: float, warmup_epochs: int, warmup_start: float =
     module._cons_warmup_start_weight = 0.0
     module._cons_temperature = 0.05
     module._cons_mode = "symmetric"
+    module._mono_loss_enabled = False
+    module._mono_weight = 0.0
+    module._mono_warmup_epochs = 0
+    module._mono_warmup_start_weight = 0.0
+    module._rank_loss_enabled = False
+    module._rank_weight = 0.0
+    module._rank_warmup_epochs = 0
+    module._rank_warmup_start_weight = 0.0
     return module
 
 

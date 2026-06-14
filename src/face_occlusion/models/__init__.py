@@ -6,10 +6,13 @@ from .ordinal import (
     DEFAULT_ORDINAL_THRESHOLDS,
     OrdinalHead,
     make_ordinal_targets,
+    ordinal_monotonicity_loss,
+    ordinal_monotonicity_violation_rate,
     regression_ordinal_consistency_loss,
     threshold_weighted_bce,
 )
 from .outputs import OcclusionModelOutput
+from .ranking import monotonic_ranking_loss, ordering_accuracy, ranknet_loss
 from .regressor import OcclusionRegressor, build_model
 
 __all__ = [
@@ -21,6 +24,11 @@ __all__ = [
     "OrdinalHead",
     "build_model",
     "make_ordinal_targets",
+    "monotonic_ranking_loss",
+    "ordering_accuracy",
+    "ordinal_monotonicity_loss",
+    "ordinal_monotonicity_violation_rate",
+    "ranknet_loss",
     "regression_ordinal_consistency_loss",
     "threshold_weighted_bce",
 ]

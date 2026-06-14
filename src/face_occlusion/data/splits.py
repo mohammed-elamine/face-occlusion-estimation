@@ -14,6 +14,7 @@ import pandas as pd
 from sklearn.model_selection import StratifiedGroupKFold, train_test_split
 
 from .metadata import add_path_metadata
+from .normalize import assign_occlusion_bin, normalize_target
 
 SPLIT_METADATA_COLS = [
     "database",
@@ -23,20 +24,6 @@ SPLIT_METADATA_COLS = [
     "occlusion_bin",
     "gender",
 ]
-
-
-def _normalize_targets(values: pd.Series) -> pd.Series:
-    values = values.astype(float)
-    if values.max() > 1.5:
-        return values / 100.0
-    return values
-
-
-def _occlusion_bin(values: np.ndarray, bins: Sequence[float]) -> np.ndarray:
-    edges = np.asarray(bins, dtype=float)
-    # np.digitize maps each target to a coarse difficulty bucket.
-    idx = np.digitize(values, edges[1:-1], right=False)
-    return idx.astype(int)
 
 
 def _prepare_split_frame(
@@ -54,8 +41,8 @@ def _prepare_split_frame(
         raise ValueError(f"ID column '{id_col}' not in dataframe.")
 
     out = add_path_metadata(df, filename_col=id_col)
-    targets = _normalize_targets(out[target_col])
-    out["occlusion_bin"] = _occlusion_bin(targets.to_numpy(), bins)
+    targets = normalize_target(out[target_col], "auto")
+    out["occlusion_bin"] = assign_occlusion_bin(targets.to_numpy(), bins)
     out["gender"] = out[gender_col]
     return out
 

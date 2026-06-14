@@ -92,3 +92,10 @@ slurm-*.out
 *.tar
 *.tar.gz
 *.tgz
+
+
+# Claude Code project memory
+CLAUDE.md
+
+# Private local assets (for non-redistributable/manual experiments)
+assets_private/

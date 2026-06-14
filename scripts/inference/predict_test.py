@@ -55,7 +55,10 @@ def main() -> None:
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    seed_everything(int(cfg.project.seed))
+    # Seed identically to scripts.training.train so the eval pipeline is
+    # reproducible (review R6).
+    deterministic = bool(cfg.project.get("deterministic", False))
+    seed_everything(int(cfg.project.seed), deterministic=deterministic)
 
     dm = FaceOcclusionDataModule(cfg)
     dm.setup("predict")

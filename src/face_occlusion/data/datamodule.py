@@ -9,11 +9,19 @@ import pytorch_lightning as pl
 import torch
 from torch.utils.data import DataLoader
 
+from ..utils.reproducibility import make_dataloader_generator, seed_worker
+from .background_augment import BackgroundAugment
 from .dataset import FaceOcclusionDataset
 from .metadata import add_path_metadata
 from .samplers import build_batch_sampler_from_config
 from .splits import load_split, make_stratified_split, save_split
-from .transforms import build_eval_transform, build_train_transform
+from .synthetic_cache import SyntheticCache
+from .synthetic_occlusion import build_generator_from_config
+from .transforms import (
+    build_eval_transform,
+    build_synthetic_view_transform,
+    build_train_transform,
+)
 
 
 class FaceOcclusionDataModule(pl.LightningDataModule):
@@ -54,6 +62,56 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
         cfg = self.cfg
         train_tf = build_train_transform(cfg)
         eval_tf = build_eval_transform(cfg)
+        # Synthetic occlusion is opt-in (default: no-op). The generator is only
+        # attached to the *training* dataset and only when both
+        # ``synthetic_occlusion.enabled`` and ``.return_in_batch`` are true.
+        so_cfg = cfg.get("synthetic_occlusion", {}) if hasattr(cfg, "get") else {}
+        aug_cfg = cfg.get("augmentation", {}) if hasattr(cfg, "get") else {}
+        bg_cfg = aug_cfg.get("background", {}) if hasattr(aug_cfg, "get") else {}
+        synthetic_generator = None
+        synthetic_cache = None
+        synthetic_view_tf = None
+        synthetic_target_size = None
+        background_augment = None
+        synthetic_seed = int(so_cfg.get("seed", 42)) if so_cfg else 42
+        cache_dir = so_cfg.get("cache_dir", None) if so_cfg else None
+        use_cache = bool(so_cfg.get("use_cache", True)) if so_cfg else True
+        want_views = (
+            bool(so_cfg.get("enabled", False) and so_cfg.get("return_in_batch", False))
+            if so_cfg
+            else False
+        )
+        want_bg = bool(bg_cfg.get("enabled", False)) if bg_cfg else False
+
+        # A single cache backs both synthetic views and background-aug masks.
+        if cache_dir and use_cache and (want_views or want_bg):
+            synthetic_cache = SyntheticCache(cache_dir)
+            print(
+                f"[datamodule] Loaded synthetic cache from {cache_dir} "
+                f"({len(synthetic_cache)} pairs)"
+            )
+
+        if want_views:
+            synthetic_view_tf = build_synthetic_view_transform(cfg)
+            synthetic_target_size = int(cfg.augmentation.resize)
+            # On-the-fly generation is the fallback when no cache is configured.
+            if synthetic_cache is None:
+                synthetic_generator = build_generator_from_config(cfg)
+
+        if want_bg:
+            if synthetic_cache is not None:
+                background_augment = BackgroundAugment(
+                    mask_lookup=synthetic_cache.load_mask,
+                    p=float(bg_cfg.get("p", 0.5)),
+                    modes=tuple(bg_cfg.get("modes", ["replace", "brightness", "noise"])),
+                    seed=int(bg_cfg.get("seed", synthetic_seed)),
+                    noise_std=float(bg_cfg.get("noise_std", 25.0)),
+                )
+            else:
+                print(
+                    "[datamodule] Warning: augmentation.background.enabled but no "
+                    "synthetic cache (set synthetic_occlusion.cache_dir); skipping."
+                )
 
         if stage in (None, "fit", "validate"):
             df = add_path_metadata(pd.read_csv(cfg.data.train_csv), filename_col=cfg.data.id_col)
@@ -62,7 +120,18 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
             merged = df.merge(split, on=cfg.data.id_col, how="inner")
             if len(merged) != len(df):
                 missing = len(df) - len(merged)
-                print(f"[datamodule] Warning: {missing} rows missing from split, will be dropped.")
+                msg = (
+                    f"[datamodule] Split/train.csv mismatch on '{cfg.data.id_col}': "
+                    f"{len(df)} train rows but {len(merged)} matched the split "
+                    f"({missing} dropped). The split is likely stale relative to "
+                    f"train.csv. Regenerate it with scripts.data.make_split, or set "
+                    f"split.allow_missing_rows=true to proceed anyway."
+                )
+                # Loud by default: a silent row drop quietly shrinks the dataset and
+                # makes val/score incomparable across runs (review R9).
+                if not bool(cfg.split.get("allow_missing_rows", False)):
+                    raise ValueError(msg)
+                print(f"WARNING: {msg}")
 
             train_df = merged[merged["split"] == "train"].reset_index(drop=True)
             val_df = merged[merged["split"] == "val"].reset_index(drop=True)
@@ -77,7 +146,16 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
                 target_scale=cfg.data.target_scale,
             )
             self.train_ds = FaceOcclusionDataset(
-                train_df, transform=train_tf, mode="train", **common
+                train_df,
+                transform=train_tf,
+                mode="train",
+                synthetic_generator=synthetic_generator,
+                synthetic_cache=synthetic_cache,
+                synthetic_view_transform=synthetic_view_tf,
+                synthetic_target_size=synthetic_target_size,
+                synthetic_seed=synthetic_seed,
+                background_augment=background_augment,
+                **common,
             )
             self.val_ds = FaceOcclusionDataset(val_df, transform=eval_tf, mode="val", **common)
 
@@ -104,6 +182,9 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
         # persistent_workers avoids worker restart overhead when num_workers > 0.
         # Pinned memory helps CUDA transfers, but PyTorch warns that MPS does not support it.
         pin_memory = torch.cuda.is_available()
+        # Seed worker RNGs (NumPy/random) and the shuffle generator so runs are
+        # reproducible regardless of worker count.
+        generator = make_dataloader_generator(int(self.cfg.project.seed)) if shuffle else None
         return DataLoader(
             ds,
             batch_size=batch_size,
@@ -112,6 +193,8 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
             num_workers=num_workers,
             pin_memory=pin_memory,
             persistent_workers=num_workers > 0,
+            worker_init_fn=seed_worker,
+            generator=generator,
         )
 
     def train_dataloader(self) -> DataLoader:
@@ -132,6 +215,7 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
                 num_workers=num_workers,
                 pin_memory=pin_memory,
                 persistent_workers=num_workers > 0,
+                worker_init_fn=seed_worker,
             )
         return self._loader(self.train_ds, batch_size, shuffle=True, drop_last=True)
 

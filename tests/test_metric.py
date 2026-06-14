@@ -61,6 +61,24 @@ def test_challenge_score_uses_female_zero_male_one_by_default():
     assert result["err_male"] == 0.0
 
 
+def test_challenge_score_combines_mean_and_gap_with_known_values():
+    # Load-bearing: pin score == mean(Err_F, Err_M) + |Err_F - Err_M| with a
+    # deliberately UNBALANCED case, so a regression to "mean only" or
+    # "mean - gap" would fail (the balanced tests cannot catch that).
+    #   female: pred 0.5, target 0.0 -> w=1/30, WMSE = 0.25
+    #   male:   pred 1.0, target 0.0 -> w=1/30, WMSE = 1.0
+    p = np.array([0.5, 1.0])
+    y = np.array([0.0, 0.0])
+    genders = np.array(["0.0", "1.0"])
+    result = challenge_score(p, y, genders)
+    assert result["err_female"] == pytest.approx(0.25)
+    assert result["err_male"] == pytest.approx(1.0)
+    assert result["err_mean"] == pytest.approx(0.625)
+    assert result["gender_gap"] == pytest.approx(0.75)
+    # The whole point: mean + |gap|, not mean alone (0.625) nor mean - gap.
+    assert result["score"] == pytest.approx(1.375)
+
+
 def test_by_group():
     y = np.array([0.0, 1.0, 0.0, 1.0])
     p = np.array([0.0, 1.0, 0.5, 0.5])

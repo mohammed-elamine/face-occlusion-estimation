@@ -21,6 +21,10 @@ from ..models import (
     OcclusionModelOutput,
     build_model,
     make_ordinal_targets,
+    monotonic_ranking_loss,
+    ordering_accuracy,
+    ordinal_monotonicity_loss,
+    ordinal_monotonicity_violation_rate,
     regression_ordinal_consistency_loss,
     threshold_weighted_bce,
 )
@@ -191,6 +195,48 @@ class FaceOcclusionLitModule(pl.LightningModule):
                 f"got {self._cons_mode!r}"
             )
 
+        # ── Ordinal monotonicity wiring (Stage 1 regulariser, doc §7) ─────
+        # Penalises non-monotone threshold probabilities. Requires an ordinal
+        # head; enabling it without one is a misconfiguration and raises.
+        mono_cfg = losses_cfg.get("monotonicity", {}) if losses_cfg else {}
+        mono_requested = bool(mono_cfg.get("enabled", False)) if mono_cfg else False
+        if mono_requested and not getattr(self.model, "use_ordinal_head", False):
+            raise ValueError(
+                "losses.monotonicity.enabled=true requires model.use_ordinal_head=true"
+            )
+        self._mono_loss_enabled = bool(
+            mono_requested and getattr(self.model, "use_ordinal_head", False)
+        )
+        self._mono_weight = float(mono_cfg.get("weight", 0.01)) if mono_cfg else 0.01
+        self._mono_warmup_epochs = int(mono_cfg.get("warmup_epochs", 0)) if mono_cfg else 0
+        self._mono_warmup_start_weight = (
+            float(mono_cfg.get("warmup_start_weight", 0.0)) if mono_cfg else 0.0
+        )
+        _scheduled_loss_weight(
+            target_weight=self._mono_weight,
+            warmup_epochs=self._mono_warmup_epochs,
+            warmup_start_weight=self._mono_warmup_start_weight,
+            current_epoch=0,
+        )
+
+        # ── Synthetic monotonic ranking wiring (Stage 4, doc §10) ─────────
+        # Consumes precomputed/generated ``clean < mild < strong`` views from
+        # the batch. Active only when enabled; lands on the regression head so
+        # it is kept small + warmed up (calibration is watched separately).
+        rank_cfg = losses_cfg.get("ranking", {}) if losses_cfg else {}
+        self._rank_loss_enabled = bool(rank_cfg.get("enabled", False)) if rank_cfg else False
+        self._rank_weight = float(rank_cfg.get("weight", 0.1)) if rank_cfg else 0.1
+        self._rank_warmup_epochs = int(rank_cfg.get("warmup_epochs", 0)) if rank_cfg else 0
+        self._rank_warmup_start_weight = (
+            float(rank_cfg.get("warmup_start_weight", 0.0)) if rank_cfg else 0.0
+        )
+        _scheduled_loss_weight(
+            target_weight=self._rank_weight,
+            warmup_epochs=self._rank_warmup_epochs,
+            warmup_start_weight=self._rank_warmup_start_weight,
+            current_epoch=0,
+        )
+
     # ------------------------------------------------------------------
     def forward(self, x: torch.Tensor) -> OcclusionModelOutput:
         # Returns the structured output contract (see models.outputs).
@@ -206,13 +252,21 @@ class FaceOcclusionLitModule(pl.LightningModule):
 
         loss_ord = self._compute_ordinal_loss(outputs, targets)
         loss_cons = self._compute_consistency_loss(outputs)
+        loss_mono = self._compute_monotonicity_loss(outputs)
+        loss_rank, rank_acc = self._compute_ranking_loss(batch)
         loss = loss_reg
         lambda_ord = self._effective_ordinal_weight() if loss_ord is not None else 0.0
         lambda_cons = self._effective_consistency_weight() if loss_cons is not None else 0.0
+        lambda_mono = self._effective_monotonicity_weight() if loss_mono is not None else 0.0
+        lambda_rank = self._effective_ranking_weight() if loss_rank is not None else 0.0
         if loss_ord is not None:
             loss = loss + lambda_ord * loss_ord
         if loss_cons is not None:
             loss = loss + lambda_cons * loss_cons
+        if loss_mono is not None:
+            loss = loss + lambda_mono * loss_mono
+        if loss_rank is not None:
+            loss = loss + lambda_rank * loss_rank
 
         # Keep `train/loss` = total so existing dashboards continue to work.
         self.log(
@@ -223,7 +277,7 @@ class FaceOcclusionLitModule(pl.LightningModule):
             on_epoch=True,
             batch_size=batch_size,
         )
-        if loss_ord is not None or loss_cons is not None:
+        if any(loss_x is not None for loss_x in (loss_ord, loss_cons, loss_mono, loss_rank)):
             self.log(
                 "train/loss_reg", loss_reg, on_step=False, on_epoch=True, batch_size=batch_size
             )
@@ -246,6 +300,36 @@ class FaceOcclusionLitModule(pl.LightningModule):
             self.log(
                 "train/lambda_cons",
                 float(lambda_cons),
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
+        if loss_mono is not None:
+            self.log(
+                "train/loss_mono", loss_mono, on_step=False, on_epoch=True, batch_size=batch_size
+            )
+            self.log(
+                "train/lambda_mono",
+                float(lambda_mono),
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
+        if loss_rank is not None:
+            self.log(
+                "train/loss_rank", loss_rank, on_step=False, on_epoch=True, batch_size=batch_size
+            )
+            self.log(
+                "train/lambda_rank",
+                float(lambda_rank),
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
+            # Diagnostic: fraction of synthetic triples ordered clean<mild<strong.
+            self.log(
+                "train/rank_ordering_acc",
+                rank_acc,
                 on_step=False,
                 on_epoch=True,
                 batch_size=batch_size,
@@ -305,6 +389,57 @@ class FaceOcclusionLitModule(pl.LightningModule):
             mode=self._cons_mode,
         )
 
+    def _effective_monotonicity_weight(self) -> float:
+        """Current-epoch monotonicity coefficient after optional linear warmup."""
+        return _scheduled_loss_weight(
+            target_weight=self._mono_weight,
+            warmup_epochs=self._mono_warmup_epochs,
+            warmup_start_weight=self._mono_warmup_start_weight,
+            current_epoch=int(self.current_epoch),
+        )
+
+    def _compute_monotonicity_loss(self, outputs: OcclusionModelOutput) -> torch.Tensor | None:
+        """Hinge penalty on non-monotone ordinal threshold probabilities."""
+        if not self._mono_loss_enabled or outputs.ordinal_logits is None:
+            return None
+        return ordinal_monotonicity_loss(outputs.ordinal_logits)
+
+    def _any_ordinal_diag_enabled(self) -> bool:
+        """Whether any ordinal-based loss/diagnostic needs the ordinal logits."""
+        return self._ord_loss_enabled or self._cons_loss_enabled or self._mono_loss_enabled
+
+    def _effective_ranking_weight(self) -> float:
+        """Current-epoch ranking coefficient after optional linear warmup."""
+        return _scheduled_loss_weight(
+            target_weight=self._rank_weight,
+            warmup_epochs=self._rank_warmup_epochs,
+            warmup_start_weight=self._rank_warmup_start_weight,
+            current_epoch=int(self.current_epoch),
+        )
+
+    def _compute_ranking_loss(self, batch) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        """RankNet loss + ordering accuracy over MediaPipe-valid synthetic triples.
+
+        Returns ``(None, None)`` when ranking is disabled, the batch carries no
+        synthetic views, or no row in the batch is valid.
+        """
+        if not self._rank_loss_enabled or "synthetic_clean_image" not in batch:
+            return None, None
+        valid = batch["synthetic_valid"].bool()
+        if not bool(valid.any()):
+            return None, None
+        clean = batch["synthetic_clean_image"][valid]
+        mild = batch["synthetic_mild_image"][valid]
+        strong = batch["synthetic_strong_image"][valid]
+        # One forward over the stacked views, then split back into the three sets.
+        stacked = torch.cat([clean, mild, strong], dim=0)
+        scores = self(stacked).y_pred
+        n = clean.shape[0]
+        s_clean, s_mild, s_strong = scores[:n], scores[n : 2 * n], scores[2 * n :]
+        loss = monotonic_ranking_loss(s_clean, s_mild, s_strong)
+        acc = ordering_accuracy(s_clean.detach(), s_mild.detach(), s_strong.detach())
+        return loss, acc
+
     def validation_step(self, batch, batch_idx):
         outputs = self(batch["image"])
         preds = outputs.y_pred
@@ -320,6 +455,16 @@ class FaceOcclusionLitModule(pl.LightningModule):
             on_epoch=True,
             batch_size=batch_size,
         )
+        # Diagnostic: how often the ordinal head produces non-monotone outputs.
+        # Logged whenever the ordinal head is in use, independent of L_mono.
+        if outputs.ordinal_logits is not None and self._any_ordinal_diag_enabled():
+            self.log(
+                "val/ord_monotonicity_violation_rate",
+                ordinal_monotonicity_violation_rate(outputs.ordinal_logits),
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
         self._val_buffer.append(
             {
                 "preds": preds.detach().cpu(),
@@ -327,8 +472,7 @@ class FaceOcclusionLitModule(pl.LightningModule):
                 "genders": batch["gender"].detach().cpu(),
                 "ordinal_logits": (
                     outputs.ordinal_logits.detach().cpu()
-                    if outputs.ordinal_logits is not None
-                    and (self._ord_loss_enabled or self._cons_loss_enabled)
+                    if outputs.ordinal_logits is not None and self._any_ordinal_diag_enabled()
                     else None
                 ),
                 "image_ids": list(batch["image_id"]),

@@ -26,6 +26,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+synthetic = ["mediapipe>=0.10.0"]
 wandb = ["wandb>=0.16"]
 
 [dependency-groups]

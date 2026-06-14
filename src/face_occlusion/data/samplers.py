@@ -25,6 +25,8 @@ import numpy as np
 import pandas as pd
 from torch.utils.data import Sampler
 
+from .normalize import assign_occlusion_bin, normalize_target
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,16 +48,6 @@ _DEFAULT_BIN_WEIGHTS: dict[str, float] = {
 
 def _bin_label(edges: Sequence[float], idx: int) -> str:
     return f"{edges[idx]:.2f}_{edges[idx + 1]:.2f}"
-
-
-def _assign_bins(targets: np.ndarray, edges: Sequence[float]) -> np.ndarray:
-    """Assign each target to a bin index in ``[0, len(edges) - 2]``."""
-    edges_arr = np.asarray(edges, dtype=float)
-    # np.digitize with right=False produces 1..len(edges); subtract 1 to get
-    # 0..len(edges)-1. The boundary value ``edges[-1]`` (typically 1.0) lands in
-    # bin len(edges)-1, which is invalid -- clip it back into the last bin.
-    bins = np.digitize(targets, edges_arr[1:-1], right=False)
-    return np.clip(bins, 0, len(edges_arr) - 2)
 
 
 def _validate_bins(bins: Sequence[float]) -> None:
@@ -166,8 +158,9 @@ class GenderOcclusionBalancedBatchSampler(Sampler[list[int]]):
         if self.num_samples_requested <= 0:
             raise ValueError("`num_samples` must be positive")
 
-        # Build strata.
-        bin_idx = _assign_bins(targets, self.bins)
+        # Build strata. ``targets`` are already normalized to [0, 1] by the
+        # factory, so binning here matches the split's occlusion bins exactly.
+        bin_idx = assign_occlusion_bin(targets, self.bins)
         self._strata: dict[tuple[int, int], np.ndarray] = {}
         for g in (0, 1):
             for b in range(len(self.bins) - 1):
@@ -527,6 +520,7 @@ def build_batch_sampler_from_config(
 
     target_col = str(_get("target_col", _data_get("target_col", "face_occluded")))
     gender_col = str(_get("gender_col", _data_get("gender_col", "gender")))
+    target_scale = str(_get("target_scale", _data_get("target_scale", "auto")))
 
     for col, key in ((target_col, "data.target_col"), (gender_col, "data.gender_col")):
         if col not in df.columns:
@@ -536,7 +530,11 @@ def build_batch_sampler_from_config(
                 f"{sorted(df.columns)}"
             )
 
-    targets = df[target_col].to_numpy(dtype=float)
+    # Normalize the target to [0, 1] before the sampler bins it, so the strata
+    # match the split's occlusion bins even if the raw labels are percent-scaled
+    # (otherwise a percent-scaled CSV would collapse every sample into the top
+    # bin and silently invert the sampler's intent).
+    targets = np.asarray(normalize_target(df[target_col], target_scale), dtype=float)
     genders = df[gender_col].to_numpy(dtype=float)
 
     return GenderOcclusionBalancedBatchSampler(

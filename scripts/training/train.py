@@ -20,6 +20,7 @@ import torch
 from pytorch_lightning.loggers import CSVLogger
 
 from face_occlusion.data.datamodule import FaceOcclusionDataModule
+from face_occlusion.data.normalize import normalize_target
 from face_occlusion.training import FaceOcclusionLitModule, build_callbacks
 from face_occlusion.utils import (
     create_run_dir,
@@ -178,7 +179,8 @@ def main() -> None:
 
     print(f"[train] Experiment directory: {run_dir}")
 
-    seed_everything(int(cfg.project.seed))
+    deterministic = bool(cfg.project.get("deterministic", False))
+    seed_everything(int(cfg.project.seed), deterministic=deterministic)
     pl.seed_everything(int(cfg.project.seed), workers=True)
     _configure_float32_matmul_precision(cfg)
 
@@ -187,12 +189,11 @@ def main() -> None:
     _copy_split_snapshot(cfg, run_dir)
     dm.setup("fit")
 
-    # Use training-set mean target to warm-start the head bias.
+    # Use training-set mean target to warm-start the head bias. Use the same
+    # normalization the dataset applies so the bias matches the model targets.
     mean_target = None
     if dm.train_df is not None and cfg.data.target_col in dm.train_df.columns:
-        vals = dm.train_df[cfg.data.target_col].astype(float)
-        if vals.max() > 1.5:
-            vals = vals / 100.0
+        vals = normalize_target(dm.train_df[cfg.data.target_col], cfg.data.target_scale)
         mean_target = float(vals.mean())
 
     module = FaceOcclusionLitModule(cfg, mean_target=mean_target)
@@ -210,6 +211,7 @@ def main() -> None:
         log_every_n_steps=20,
         accelerator="auto",
         devices="auto",
+        deterministic=deterministic,
     )
 
     trainer.fit(module, datamodule=dm)

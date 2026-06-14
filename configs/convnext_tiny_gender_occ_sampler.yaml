@@ -71,7 +71,31 @@ losses:
     enabled: false
 
 synthetic_occlusion:
-  enabled: false
+  enabled: false                  # Stage 3 generator; default disabled (no behavior change)
+  return_in_batch: false          # When true and enabled, training batches gain synthetic_* keys
+  region_provider: mediapipe
+  severity:
+    mild:
+      min: 0.05
+      max: 0.15
+    strong:
+      min: 0.35
+      max: 0.60
+  region_weights:
+    eyes: 1.00
+    mouth: 0.85
+    nose: 0.75
+    cheeks: 0.45
+    forehead_chin: 0.35
+    background: 0.00
+  occluder_types:
+    - mask_like_lower_face
+    - sunglasses_like_eyes
+    - random_face_rectangle
+    - random_textured_polygon
+    - blurred_patch
+  max_attempts: 50
+  seed: 42
 
 triplet_sampling:
   enabled: false
