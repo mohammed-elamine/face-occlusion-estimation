@@ -237,6 +237,19 @@ class OcclusionRegressor(nn.Module):
             return torch.sigmoid(raw)
         return raw
 
+    @torch.no_grad()
+    def pooled_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Pre-logit pooled encoder features ``(B, d)`` — the input the final head sees.
+
+        Used by DFR (last-layer retraining): for the mlp/distribution paths the backbone is a
+        pure feature extractor (``backbone(x)``); for the linear path we take
+        ``forward_head(forward_features(x), pre_logits=True)`` so ``get_classifier()(features)``
+        reproduces the model's output.
+        """
+        if self.head is not None:
+            return self.backbone(x)
+        return self.backbone.forward_head(self.backbone.forward_features(x), pre_logits=True)
+
     def _shadow_from(self, feat: torch.Tensor) -> torch.Tensor | None:
         """Auxiliary shadow prediction in [0, 1] from pooled features (None if head disabled)."""
         if self.shadow_head is None:
