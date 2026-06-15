@@ -26,7 +26,7 @@ data:
   # Dataset gender encoding: female=0, male=1.
   female_value: 0.0
   male_value: 1.0
-  submission_dummy_gender: 0
+  submission_dummy_gender: x
   target_scale: auto          # auto | unit | percent
   val_size: 0.2
   num_workers: 4

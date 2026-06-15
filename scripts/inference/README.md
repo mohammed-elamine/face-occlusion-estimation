@@ -8,8 +8,11 @@ python -m scripts.inference.predict_test \
   --checkpoint outputs/experiments/<run_id>/checkpoints/best.ckpt
 ```
 
-The submission writer adds the required dummy `gender` column for
-`test_students.csv`.
+The submission writer emits the teacher's expected columns — `filename,FaceOcclusion,gender`
+— where `gender` is a required **placeholder** the platform ignores (it uses its own
+server-side test genders). Matching the teacher's example, the dummy value defaults to the
+string `"x"` (override with `data.submission_dummy_gender`, or `--dummy-gender` on the
+ensemble writer).
 
 ## Ensemble submission
 

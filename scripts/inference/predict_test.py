@@ -27,10 +27,17 @@ def _default_output_dir(cfg, checkpoint: str | Path) -> Path:
     return Path(cfg.project.output_dir) / "predictions"
 
 
-def build_submission(df: pd.DataFrame, cfg) -> pd.DataFrame:
-    """Build the challenge submission with a dummy gender column required by the platform."""
+def build_submission(df: pd.DataFrame, cfg, dummy_gender=None) -> pd.DataFrame:
+    """Build the challenge submission with a dummy gender column required by the platform.
 
-    dummy_gender = cfg.data.get("submission_dummy_gender", cfg.data.get("female_value", 0))
+    The upload format wants a ``gender`` column, but it is a placeholder: the platform uses
+    its own server-side test genders to compute the gender-aware metric. The teacher's example
+    fills it with the string ``"x"`` (a non-{0,1} value, so it cannot be mistaken for a real
+    label) — we match that. ``dummy_gender`` overrides the value; otherwise the config's
+    ``data.submission_dummy_gender`` is used, defaulting to ``"x"``.
+    """
+    if dummy_gender is None:
+        dummy_gender = cfg.data.get("submission_dummy_gender", "x")
     return pd.DataFrame(
         {
             cfg.data.image_col: df["filename"],

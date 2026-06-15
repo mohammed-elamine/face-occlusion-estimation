@@ -108,6 +108,14 @@ def main() -> None:
     )
     parser.add_argument("--checkpoint-name", default="best.ckpt")
     parser.add_argument(
+        "--dummy-gender",
+        default="x",
+        help=(
+            "Placeholder value for the submission's required `gender` column (the platform "
+            "uses its own test genders). Matches the teacher's example default 'x'."
+        ),
+    )
+    parser.add_argument(
         "--tta",
         action="store_true",
         help="Use image+hflip TTA when generating any missing member test predictions.",
@@ -164,7 +172,7 @@ def main() -> None:
     ensemble.to_csv(ext_path, index=False)
 
     cfg = load_config(args.config) if args.config else load_config(str(members[0] / "config.yaml"))
-    submission = build_submission(ensemble, cfg)
+    submission = build_submission(ensemble, cfg, dummy_gender=args.dummy_gender)
     sub_path = out_dir / "test_predictions.csv"
     submission.to_csv(sub_path, index=False)
 
