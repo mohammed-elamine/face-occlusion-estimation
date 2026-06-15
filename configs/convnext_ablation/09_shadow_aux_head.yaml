@@ -58,6 +58,7 @@ losses:
   shadow: {enabled: true, weight: 0.2, loss: l2, warmup_epochs: 0}
 synthetic_occlusion: {enabled: false}
 triplet_sampling: {enabled: false}
+sampler: {enabled: false}
 training:
   batch_size: 64
   max_epochs: 20
@@ -80,6 +81,7 @@ augmentation:
   background: {enabled: false}
 inference:
   tta: false
+checkpoint: {monitor: val/score, mode: min, save_top_k: 1, filename: best}
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
