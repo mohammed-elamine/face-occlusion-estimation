@@ -231,11 +231,28 @@ def _resolve_seed(cfg) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
+    parser.add_argument(
+        "--train-on-all",
+        action="store_true",
+        help=(
+            "Final-submission refit: fold the val rows back into training (no genuine "
+            "held-out set). Disables early stopping and best.ckpt; train a fixed epoch "
+            "budget and use last.ckpt. Keep the recipe frozen (hyperparameters were "
+            "selected on the held-out val). Equivalent to setting split.train_on_all=true."
+        ),
+    )
     args = parser.parse_args()
 
     _configure_runtime_noise_filters()
 
     cfg = load_config(args.config)
+    if args.train_on_all:
+        # Record it in cfg so the run's config.yaml / metadata.json snapshot reflects it.
+        cfg.setdefault("split", {})["train_on_all"] = True
+        print(
+            "[train] --train-on-all: folding val into train; no early stopping / best.ckpt, "
+            "use last.ckpt for inference."
+        )
     # Resolve the seed BEFORE the run dir / config snapshot so the chosen seed is recorded.
     _resolve_seed(cfg)
     run_dir = create_run_dir(cfg)

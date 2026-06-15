@@ -153,6 +153,24 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
 
             train_df = merged[merged["split"] == "train"].reset_index(drop=True)
             val_df = merged[merged["split"] == "val"].reset_index(drop=True)
+
+            if bool(cfg.split.get("train_on_all", False)):
+                # Final-submission mode: fold the val rows back into training so the model
+                # also learns from the held-out data (here, the scarce high-occlusion tail).
+                # We then have NO genuine held-out set, so `val_df` is a LEAKED monitor (a
+                # subset of train) that only keeps Lightning's validation loop / logging
+                # alive — val/score is NOT a selection signal. Train for a fixed epoch budget
+                # and use last.ckpt (early stopping is off and no best.ckpt is written; see
+                # training/callbacks.py).
+                monitor_df = val_df if len(val_df) else merged
+                train_df = merged.reset_index(drop=True)
+                val_df = monitor_df.reset_index(drop=True)
+                print(
+                    f"[datamodule] train_on_all: training on ALL {len(train_df)} labeled "
+                    f"rows; val is a LEAKED {len(val_df)}-row monitor (not for selection). "
+                    "Use last.ckpt for inference."
+                )
+
             self.train_df = train_df
 
             common = dict(
