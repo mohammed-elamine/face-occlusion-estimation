@@ -41,6 +41,7 @@ class FaceOcclusionDataset(Dataset):
         synthetic_cache: SyntheticCache | None = None,
         background_augment=None,
         return_bg_pair: bool = False,
+        shadow_col: str | None = None,
     ) -> None:
         assert mode in {"train", "val", "test"}, f"Unknown mode {mode}"
         self.mode = mode
@@ -64,6 +65,10 @@ class FaceOcclusionDataset(Dataset):
         self.synthetic_view_transform = synthetic_view_transform
         self.synthetic_target_size = synthetic_target_size
         self.synthetic_seed = int(synthetic_seed)
+        # Auxiliary shadow-head target column (train only). When present, each item carries
+        # ``shadow_target`` (the precomputed within-face deep-shadow fraction); NaN rows are
+        # masked out by the loss. No-op in val/test.
+        self.shadow_col = shadow_col if mode == "train" else None
 
         df = add_path_metadata(metadata.reset_index(drop=True), filename_col=image_col)
         if mode != "test":
@@ -114,6 +119,12 @@ class FaceOcclusionDataset(Dataset):
         if self.mode != "test":
             item["gender"] = torch.tensor(float(row[self.gender_col]), dtype=torch.float32)
             item["target"] = torch.tensor(float(row[self.target_col]), dtype=torch.float32)
+        # Auxiliary shadow target (train only); NaN when missing so the loss can mask it.
+        if self.shadow_col is not None and self.shadow_col in self.df.columns:
+            val = row[self.shadow_col]
+            item["shadow_target"] = torch.tensor(
+                float(val) if pd.notna(val) else float("nan"), dtype=torch.float32
+            )
         # Background-invariance consistency view: the same face crop with a different
         # randomized background. The model should predict the same occlusion for both.
         if self.return_bg_pair and self.background_augment is not None and self.transform:

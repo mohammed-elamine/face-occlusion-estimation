@@ -26,6 +26,7 @@ time). A variant is only adopted if its Δscore CI is **below 0**.
 | 06 | `06_gender_balanced_ema` | `02` + EMA | gender_balanced loss + EMA — a strong ensemble member. |
 | 07 | `07_convnext_base_ema` | `01` + EMA | bigger backbone + EMA — a diverse, stronger ensemble member. |
 | 08 | `08_ordinal_expectation_dldl` | linear head → distribution head + `dldl` loss | Ordered-bin **expectation** head (DEX) with **DLDL/LDS** soft labels — the literature's imbalanced-regression approach. A *decorrelated* (classification-trained) ensemble member. See [docs/architecture/09](../../docs/architecture/09-imbalanced-regression-and-expectation-head.md). |
+| 09 | `09_shadow_aux_head` | champion + `model.use_shadow_head` + `losses.shadow` | **Auxiliary shadow head**: predict the within-face deep-shadow fraction as a multi-task signal (shadow is the one image property correlated with the label, ρ≈+0.18; see `tmp/model_study`). Pushes the encoder to represent illumination; dropped at inference. **Prereq:** `python -m scripts.data.build_shadow_targets --config configs/convnext_ablation/09_shadow_aux_head.yaml`. A decorrelated ensemble member. |
 
 ## Results (2026-06-14, all seed 42, paired-Δ vs champion 0.00129)
 

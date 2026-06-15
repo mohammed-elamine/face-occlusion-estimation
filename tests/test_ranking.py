@@ -93,6 +93,7 @@ def _ranking_module(weight=0.1):
     m._rank_warmup_epochs = 0
     m._rank_warmup_start_weight = 0.0
     m._bgc_enabled = False
+    m._shadow_loss_enabled = False
     m._reg_reweight = "none"
     m._reg_bin_weights = None
     m._reg_edges = None

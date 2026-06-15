@@ -1,0 +1,87 @@
+# Champion + auxiliary shadow head (multi-task). Same recipe as 00_baseline, plus a small head
+# that predicts the within-face deep-shadow fraction (dark_frac) — the one image property that
+# correlates with the occlusion label (see tmp/model_study). Goal: push the encoder to represent
+# illumination so it predicts the genuinely-shadowed tail better; the aux head is dropped at
+# inference. PREREQUISITE: precompute targets once with
+#   python -m scripts.data.build_shadow_targets --config configs/convnext_ablation/09_shadow_aux_head.yaml
+# Gate vs the champion with compare_experiments (paired-Δ + bootstrap CI).
+project:
+  name: face-occlusion-estimation
+  seed: 42
+  output_dir: outputs
+  deterministic: false
+experiment:
+  name: cnx_ablation_09_shadow_aux_head
+  output_root: outputs/experiments
+  save_git_info: true
+  save_config: true
+  create_latest_pointer: true
+data:
+  train_csv: data/raw/occlusion_datasets/train.csv
+  test_csv: data/raw/occlusion_datasets/test_students.csv
+  image_root: data/raw/crops/Crop_224_5fp_100K
+  image_col: filename
+  target_col: FaceOcclusion
+  gender_col: gender
+  id_col: filename
+  female_value: 0.0
+  male_value: 1.0
+  submission_dummy_gender: x
+  target_scale: auto
+  val_size: 0.2
+  num_workers: 8
+  shadow_targets_csv: data/shadow_targets/train_dark_frac.csv
+split:
+  strategy: row_stratified
+  occlusion_bins: [0.0, 0.05, 0.1, 0.2, 0.4, 0.6, 1.0]
+  split_path: outputs/splits/canonical_row_split.csv
+  val_size: 0.2
+  random_state: 42
+  stratify_by: [gender, occlusion_bin, database]
+  group_col: group_id
+  allow_missing_rows: false
+model:
+  backbone: convnext_small.fb_in22k_ft_in1k
+  pretrained: true
+  output_activation: identity
+  dropout: 0.0
+  use_ordinal_head: false
+  use_shadow_head: true
+  shadow_head: {hidden_dim: 64, dropout: 0.0}
+losses:
+  regression: {type: weighted_mse, reweight: none}
+  ordinal: {enabled: false}
+  consistency: {enabled: false}
+  monotonicity: {enabled: false}
+  ranking: {enabled: false}
+  triplet: {enabled: false}
+  shadow: {enabled: true, weight: 0.2, loss: l2, warmup_epochs: 0}
+synthetic_occlusion: {enabled: false}
+triplet_sampling: {enabled: false}
+training:
+  batch_size: 64
+  max_epochs: 20
+  learning_rate: 1.0e-4
+  weight_decay: 0.03
+  optimizer: adamw
+  scheduler: cosine
+  precision: 16-mixed
+  float32_matmul_precision: high
+  gradient_clip_val: 1.0
+  early_stopping_patience: 5
+augmentation:
+  resize: 224
+  horizontal_flip_p: 0.5
+  color_jitter_p: 0.5
+  brightness: 0.1
+  contrast: 0.1
+  saturation: 0.05
+  rotation_degrees: 3
+  background: {enabled: false}
+inference:
+  tta: false
+logging:
+  use_wandb: false
+  wandb_project: face-occlusion-estimation
+  run_name: cnx_ablation_09_shadow_aux_head
+  log_images: false

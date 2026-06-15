@@ -38,6 +38,8 @@ class OcclusionRegressor(nn.Module):
         lora: dict | None = None,
         head: dict | None = None,
         backbone_source: str = "timm",
+        use_shadow_head: bool = False,
+        shadow_head: dict | None = None,
     ) -> None:
         super().__init__()
         if output_activation not in {"identity", "sigmoid"}:
@@ -138,6 +140,24 @@ class OcclusionRegressor(nn.Module):
         else:
             self.ordinal_head = None
 
+        # Auxiliary shadow head (training-only multi-task): predicts the within-face deep-shadow
+        # fraction from the pooled features, pushing the encoder to represent illumination. Built
+        # before LoRA wrapping so it stays trainable and outside the peft model. Dropped at
+        # inference (the occlusion prediction never reads it).
+        self.use_shadow_head = bool(use_shadow_head)
+        if self.use_shadow_head:
+            sh_cfg = dict(shadow_head) if shadow_head else {}
+            hidden = int(sh_cfg.get("hidden_dim", 64))
+            self.shadow_head = nn.Sequential(
+                nn.LayerNorm(feat_dim),
+                nn.Linear(feat_dim, hidden),
+                nn.GELU(),
+                nn.Dropout(float(sh_cfg.get("dropout", 0.0))),
+                nn.Linear(hidden, 1),
+            )
+        else:
+            self.shadow_head = None
+
         if lora_enabled:
             self._wrap_lora(lora, has_separate_head=mlp_head)
 
@@ -200,6 +220,8 @@ class OcclusionRegressor(nn.Module):
             backbone_params = [p for p in self.backbone.parameters() if id(p) not in clf_ids]
         if self.ordinal_head is not None:
             head_params += list(self.ordinal_head.parameters())
+        if self.shadow_head is not None:
+            head_params += list(self.shadow_head.parameters())
 
         groups = []
         for params, lr in ((head_params, head_lr), (backbone_params, backbone_lr)):
@@ -215,6 +237,12 @@ class OcclusionRegressor(nn.Module):
             return torch.sigmoid(raw)
         return raw
 
+    def _shadow_from(self, feat: torch.Tensor) -> torch.Tensor | None:
+        """Auxiliary shadow prediction in [0, 1] from pooled features (None if head disabled)."""
+        if self.shadow_head is None:
+            return None
+        return torch.sigmoid(self.shadow_head(feat).squeeze(-1))
+
     def forward(self, x: torch.Tensor) -> OcclusionModelOutput:
         # Distribution (DEX/DLDL) head: pooled features -> K bin logits -> softmax -> the
         # prediction is the bin expectation (bounded to [c_1, c_K], so no activation needed).
@@ -223,30 +251,37 @@ class OcclusionRegressor(nn.Module):
             logits = self.head(feat)
             probs = torch.softmax(logits, dim=-1)
             y_pred = expectation(probs, self.bin_centers)
-            return OcclusionModelOutput(y_pred=y_pred, bin_logits=logits, features=feat)
+            return OcclusionModelOutput(
+                y_pred=y_pred, bin_logits=logits, features=feat, shadow_pred=self._shadow_from(feat)
+            )
 
         # MLP-head path: backbone (num_classes=0) -> pooled features -> separate MLP head.
         if self.head is not None:
             feat = self.backbone(x)
             raw = self.head(feat).squeeze(-1)
-            return OcclusionModelOutput(y_pred=self._apply_activation(raw))
+            return OcclusionModelOutput(
+                y_pred=self._apply_activation(raw),
+                features=feat if self.shadow_head is not None else None,
+                shadow_pred=self._shadow_from(feat),
+            )
 
         # Fast path: with no auxiliary head we keep the exact Stage 0 call
         # (``self.backbone(x)``) so baseline runs stay bit-identical.
-        if self.ordinal_head is None:
+        if self.ordinal_head is None and self.shadow_head is None:
             logits = self.backbone(x).squeeze(-1)
             return OcclusionModelOutput(y_pred=self._apply_activation(logits))
 
-        # Multi-head path: share pooled encoder features between heads.
+        # Multi-head path: share pooled encoder features between heads (ordinal and/or shadow).
         feats = self.backbone.forward_features(x)
         pooled = self.backbone.forward_head(feats, pre_logits=True)
         reg_head = self.backbone.get_classifier()
         raw = reg_head(pooled).squeeze(-1)
-        ordinal_logits = self.ordinal_head(pooled)
+        ordinal_logits = self.ordinal_head(pooled) if self.ordinal_head is not None else None
         return OcclusionModelOutput(
             y_pred=self._apply_activation(raw),
             ordinal_logits=ordinal_logits,
             features=pooled,
+            shadow_pred=self._shadow_from(pooled),
         )
 
 
@@ -260,6 +295,9 @@ def build_model(cfg, mean_target: float | None = None) -> OcclusionRegressor:
     # Config objects are dict-like; pass plain dicts to OcclusionRegressor.
     lora = dict(lora) if lora else None
     head = dict(head) if head else None
+    use_shadow_head = bool(m.get("use_shadow_head", False))
+    shadow_head = m.get("shadow_head", None)
+    shadow_head = dict(shadow_head) if shadow_head else None
     return OcclusionRegressor(
         backbone=m.backbone,
         pretrained=bool(m.pretrained),
@@ -272,4 +310,6 @@ def build_model(cfg, mean_target: float | None = None) -> OcclusionRegressor:
         lora=lora,
         head=head,
         backbone_source=str(m.get("backbone_source", "timm")),
+        use_shadow_head=use_shadow_head,
+        shadow_head=shadow_head,
     )

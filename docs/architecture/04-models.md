@@ -14,6 +14,7 @@ A structured output dataclass keeps the training loop stable as heads are added.
 | `ordinal_logits` | `(B, K)` | only with the ordinal head; per-threshold logits |
 | `bin_logits` | `(B, K)` | only with the distribution head; per-bin logits (`y_pred` is then `Σ softmax·centers`) — see [09](09-imbalanced-regression-and-expectation-head.md) |
 | `features` | `(B, d)` | when the multi-head path computes pooled features |
+| `shadow_pred` | `(B,)` | only with `model.use_shadow_head`; aux within-face shadow-fraction prediction in `[0,1]` (training-only, dropped at inference) — see [05](05-training.md) |
 | `projection` | `(B, p)` | reserved for a future contrastive projection head |
 
 Downstream code reads `out.y_pred`; auxiliary fields are `None` on the baseline path.
@@ -67,6 +68,14 @@ with **weight decay applied only to ≥2-D weights** (none on LayerNorm/bias). T
 **Guards:** `use_ordinal_head=True` is incompatible with `head.type=mlp` or
 `lora.enabled=True` (raises `ValueError`), because the ordinal/multi-head path expects the
 in-backbone classifier.
+
+**Auxiliary shadow head (`model.use_shadow_head`):** a small
+`LayerNorm → Linear(d, hidden) → GELU → Dropout → Linear(hidden, 1) → sigmoid` on the pooled
+features, predicting the within-face shadow fraction as a **training-only multi-task** signal
+(`shadow_pred`); the occlusion prediction is unchanged. With the linear head it routes through the
+same `forward_features` path as the ordinal head; with mlp/distribution heads it reads their pooled
+features. Built before LoRA wrapping (stays trainable) and grouped with the head params. Works
+alongside any head; the loss + targets are in [05](05-training.md).
 
 ## Ordinal head & coupled regularizers — `models/ordinal.py`
 

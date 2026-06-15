@@ -171,6 +171,31 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
                     "Use last.ckpt for inference."
                 )
 
+            # Auxiliary shadow head: merge the precomputed within-face dark_frac targets onto
+            # the train rows (keyed by id_col). Only when the head is on and the cache exists;
+            # missing rows stay NaN and the aux loss masks them. No-op for the baseline.
+            shadow_col = None
+            model_cfg = cfg.get("model", {}) if hasattr(cfg, "get") else {}
+            if model_cfg and bool(model_cfg.get("use_shadow_head", False)):
+                shadow_csv = cfg.data.get("shadow_targets_csv", None)
+                if shadow_csv and Path(shadow_csv).exists():
+                    sdf = pd.read_csv(shadow_csv)
+                    val_col = "dark_frac" if "dark_frac" in sdf.columns else sdf.columns[-1]
+                    sdf = sdf[[cfg.data.id_col, val_col]].rename(columns={val_col: "shadow_target"})
+                    train_df = train_df.merge(sdf, on=cfg.data.id_col, how="left")
+                    shadow_col = "shadow_target"
+                    have = int(train_df["shadow_target"].notna().sum())
+                    print(
+                        f"[datamodule] shadow targets: {have}/{len(train_df)} train rows have "
+                        f"dark_frac (from {shadow_csv})"
+                    )
+                else:
+                    print(
+                        "[datamodule] use_shadow_head=true but data.shadow_targets_csv missing "
+                        f"({shadow_csv}); aux shadow loss will skip (run "
+                        "scripts.data.build_shadow_targets)."
+                    )
+
             self.train_df = train_df
 
             common = dict(
@@ -197,6 +222,7 @@ class FaceOcclusionDataModule(pl.LightningDataModule):
                 synthetic_seed=synthetic_seed,
                 background_augment=background_augment,
                 return_bg_pair=return_bg_pair,
+                shadow_col=shadow_col,
                 **common,
             )
             self.val_ds = FaceOcclusionDataset(val_df, transform=eval_tf, mode="val", **common)

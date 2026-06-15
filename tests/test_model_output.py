@@ -68,6 +68,7 @@ def _make_regressor(
         )
     else:
         model.ordinal_head = None
+    model.shadow_head = None  # auxiliary shadow head off in this stub
     return model
 
 

@@ -35,6 +35,7 @@ loss = λ_reg · loss_reg
      + λ_mono · loss_mono    (ordinal monotonicity hinge,      losses.monotonicity)
      + λ_rank · loss_rank    (synthetic monotonic ranking,     losses.ranking)
      + λ_bgc  · loss_bgc     (background-invariance consistency, losses.bg_consistency)
+     + λ_shd  · loss_shadow  (auxiliary shadow-fraction prediction, losses.shadow)
 ```
 
 Each `λ` is the **effective** (post-warmup) weight from an `_effective_*_weight()` method
@@ -51,6 +52,7 @@ Gating and key config (see [02](02-configuration.md), [04](04-models.md) for the
 | monotonicity | `use_ordinal_head` + `losses.monotonicity.enabled` | `weight`, warmup |
 | ranking | `losses.ranking.enabled` (+ synthetic views in batch) | `weight`, warmup |
 | bg-consistency | `losses.bg_consistency.enabled` (+ `bg_view_image` in batch) | `weight`, `loss` (l1/l2), warmup |
+| shadow (aux) | `model.use_shadow_head` + `losses.shadow.enabled` (+ `shadow_target` in batch) | `weight`, `loss` (l1/l2), warmup |
 
 Misconfiguration (a coupled loss enabled without the ordinal head) raises `ValueError` at
 `__init__`.
@@ -65,6 +67,20 @@ representation toward background-invariance — an explicit "ignore everything b
 signal that augmentation only encourages implicitly. The datamodule sets the dataset's
 `return_bg_pair` when this loss is enabled **and** a face mask source exists; needs
 `augmentation.background.enabled`. Logged as `train/loss_bgc` / `train/lambda_bgc`.
+
+### Auxiliary shadow head (`model.use_shadow_head` + `losses.shadow`)
+
+A training-only multi-task head that predicts the **within-face deep-shadow fraction**
+(`dark_frac`) from the pooled encoder features. Shadow is the one image property found to
+correlate with the occlusion label (ρ≈+0.18; see `tmp/model_study`), so this loss pushes the
+encoder to represent illumination and predict the genuinely-shadowed tail better. `_compute_shadow_loss`
+applies an `l1`/`l2` loss between `outputs.shadow_pred` and the batch's `shadow_target`, **masking
+NaN rows** (images whose `dark_frac` was not precomputed). Targets are produced offline by
+`scripts.data.build_shadow_targets` and merged onto the train rows by the datamodule
+(`data.shadow_targets_csv`). The head is **dropped at inference** — the occlusion prediction never
+reads `shadow_pred`. Logged as `train/loss_shadow` / `train/lambda_shadow`. Built on the shared
+pooled features (the linear-head path switches to the same `forward_features` route as the ordinal
+head); the baseline forward stays bit-identical when the head is off.
 
 ### Distribution-aware reweighting (`losses.regression.reweight`)
 

@@ -44,3 +44,9 @@ class OcclusionModelOutput:
     # Per-bin logits from the distribution (DEX/DLDL) head, shape ``(B, K)``. ``None`` unless
     # ``model.head.type == "distribution"``. ``y_pred`` is then the bin expectation.
     bin_logits: torch.Tensor | None = None
+    # Auxiliary face-shadow prediction in ``[0, 1]``, shape ``(B,)``. ``None`` unless
+    # ``model.use_shadow_head``. A training-only multi-task signal (predict the within-face
+    # deep-shadow fraction) that pushes the encoder to represent illumination — shadow is the
+    # one image property that correlates with the occlusion label (see tmp/model_study). Dropped
+    # at inference: downstream code never reads it for the occlusion prediction.
+    shadow_pred: torch.Tensor | None = None

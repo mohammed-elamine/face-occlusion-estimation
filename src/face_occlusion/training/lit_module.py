@@ -309,6 +309,37 @@ class FaceOcclusionLitModule(pl.LightningModule):
             current_epoch=0,
         )
 
+        # ── Auxiliary shadow-head wiring ──────────────────────────────────
+        # Multi-task auxiliary task: predict the within-face deep-shadow fraction (dark_frac),
+        # which is the one image property that correlates with the occlusion label (ρ≈+0.18, see
+        # tmp/model_study). Pushes the encoder to represent illumination; dropped at inference.
+        # Requires model.use_shadow_head; enabling the loss without the head raises. Targets come
+        # from the batch ("shadow_target"); NaN rows are masked. Lands on the encoder via the
+        # aux head only (no effect on the regression head's output path).
+        shadow_cfg = losses_cfg.get("shadow", {}) if losses_cfg else {}
+        shadow_requested = bool(shadow_cfg.get("enabled", False)) if shadow_cfg else False
+        if shadow_requested and not getattr(self.model, "use_shadow_head", False):
+            raise ValueError("losses.shadow.enabled=true requires model.use_shadow_head=true")
+        self._shadow_loss_enabled = bool(
+            shadow_requested and getattr(self.model, "use_shadow_head", False)
+        )
+        self._shadow_weight = float(shadow_cfg.get("weight", 0.2)) if shadow_cfg else 0.2
+        self._shadow_warmup_epochs = int(shadow_cfg.get("warmup_epochs", 0)) if shadow_cfg else 0
+        self._shadow_warmup_start_weight = (
+            float(shadow_cfg.get("warmup_start_weight", 0.0)) if shadow_cfg else 0.0
+        )
+        self._shadow_loss_type = str(shadow_cfg.get("loss", "l2")) if shadow_cfg else "l2"
+        if self._shadow_loss_type not in ("l1", "l2"):
+            raise ValueError(
+                f"losses.shadow.loss must be 'l1' or 'l2', got {self._shadow_loss_type!r}"
+            )
+        _scheduled_loss_weight(
+            target_weight=self._shadow_weight,
+            warmup_epochs=self._shadow_warmup_epochs,
+            warmup_start_weight=self._shadow_warmup_start_weight,
+            current_epoch=0,
+        )
+
         # ── Distribution-aware regression reweighting (Intervention B) ────
         # Optional per-sample importance reweighting of the regression loss toward a
         # 'balanced' or 'test_matched' occlusion distribution. Reuses the SAME operator as
@@ -425,12 +456,14 @@ class FaceOcclusionLitModule(pl.LightningModule):
         loss_mono = self._compute_monotonicity_loss(outputs)
         loss_rank, rank_acc = self._compute_ranking_loss(batch)
         loss_bgc = self._compute_bg_consistency_loss(batch, preds)
+        loss_shadow = self._compute_shadow_loss(outputs, batch)
         loss = loss_reg
         lambda_ord = self._effective_ordinal_weight() if loss_ord is not None else 0.0
         lambda_cons = self._effective_consistency_weight() if loss_cons is not None else 0.0
         lambda_mono = self._effective_monotonicity_weight() if loss_mono is not None else 0.0
         lambda_rank = self._effective_ranking_weight() if loss_rank is not None else 0.0
         lambda_bgc = self._effective_bg_consistency_weight() if loss_bgc is not None else 0.0
+        lambda_shadow = self._effective_shadow_weight() if loss_shadow is not None else 0.0
         if loss_ord is not None:
             loss = loss + lambda_ord * loss_ord
         if loss_cons is not None:
@@ -441,6 +474,8 @@ class FaceOcclusionLitModule(pl.LightningModule):
             loss = loss + lambda_rank * loss_rank
         if loss_bgc is not None:
             loss = loss + lambda_bgc * loss_bgc
+        if loss_shadow is not None:
+            loss = loss + lambda_shadow * loss_shadow
 
         # Keep `train/loss` = total so existing dashboards continue to work.
         self.log(
@@ -453,7 +488,8 @@ class FaceOcclusionLitModule(pl.LightningModule):
         )
         reweight_on = self._reg_reweight != "none"
         if reweight_on or any(
-            loss_x is not None for loss_x in (loss_ord, loss_cons, loss_mono, loss_rank, loss_bgc)
+            loss_x is not None
+            for loss_x in (loss_ord, loss_cons, loss_mono, loss_rank, loss_bgc, loss_shadow)
         ):
             self.log(
                 "train/loss_reg", loss_reg, on_step=False, on_epoch=True, batch_size=batch_size
@@ -526,6 +562,21 @@ class FaceOcclusionLitModule(pl.LightningModule):
             self.log(
                 "train/lambda_bgc",
                 float(lambda_bgc),
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
+        if loss_shadow is not None:
+            self.log(
+                "train/loss_shadow",
+                loss_shadow,
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
+            self.log(
+                "train/lambda_shadow",
+                float(lambda_shadow),
                 on_step=False,
                 on_epoch=True,
                 batch_size=batch_size,
@@ -666,6 +717,37 @@ class FaceOcclusionLitModule(pl.LightningModule):
         if self._bgc_loss_type == "l2":
             return torch.mean((preds - preds_bg) ** 2)
         return torch.mean(torch.abs(preds - preds_bg))
+
+    def _effective_shadow_weight(self) -> float:
+        """Current-epoch auxiliary-shadow coefficient after optional linear warmup."""
+        return _scheduled_loss_weight(
+            target_weight=self._shadow_weight,
+            warmup_epochs=self._shadow_warmup_epochs,
+            warmup_start_weight=self._shadow_warmup_start_weight,
+            current_epoch=int(self.current_epoch),
+        )
+
+    def _compute_shadow_loss(self, outputs: OcclusionModelOutput, batch) -> torch.Tensor | None:
+        """L1/L2 loss between the aux shadow prediction and the precomputed dark_frac target.
+
+        Masks NaN targets (rows whose dark_frac was not precomputed). Returns ``None`` when the
+        aux head/loss is disabled, the batch carries no ``shadow_target``, or no row is valid.
+        """
+        if (
+            not self._shadow_loss_enabled
+            or outputs.shadow_pred is None
+            or "shadow_target" not in batch
+        ):
+            return None
+        target = batch["shadow_target"]
+        mask = ~torch.isnan(target)
+        if not bool(mask.any()):
+            return None
+        pred = outputs.shadow_pred[mask]
+        target = target[mask]
+        if self._shadow_loss_type == "l2":
+            return torch.mean((pred - target) ** 2)
+        return torch.mean(torch.abs(pred - target))
 
     def _compute_ranking_loss(self, batch) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         """RankNet loss + ordering accuracy over MediaPipe-valid synthetic triples.
