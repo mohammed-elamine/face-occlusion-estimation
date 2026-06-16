@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import pytorch_lightning as pl
 import torch
+import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LambdaLR
 
@@ -22,6 +23,7 @@ from ..models import (
     OcclusionModelOutput,
     build_model,
     dldl_kl_loss,
+    grad_reverse,
     make_ordinal_targets,
     monotonic_ranking_loss,
     ordering_accuracy,
@@ -340,6 +342,45 @@ class FaceOcclusionLitModule(pl.LightningModule):
             current_epoch=0,
         )
 
+        # ── Gender-adversary wiring (representation debiasing) ─────────────
+        # DANN-style: a gradient-reversal gender adversary on the pooled features pushes the
+        # encoder toward gender-invariant occlusion features (the fix for the entangled gender
+        # shortcut DFR could not remove — see tmp/model_study/05_gender_gap.md). Requires
+        # model.use_gender_adversary; enabling the loss without the head raises. ``conditional``
+        # one-hots the occlusion bin into the adversary so only gender info *not explained by
+        # occlusion* is removed (equalized-odds style). The warmed weight ramps the reversal.
+        gadv_cfg = losses_cfg.get("gender_adversary", {}) if losses_cfg else {}
+        gadv_requested = bool(gadv_cfg.get("enabled", False)) if gadv_cfg else False
+        if gadv_requested and not getattr(self.model, "use_gender_adversary", False):
+            raise ValueError(
+                "losses.gender_adversary.enabled=true requires model.use_gender_adversary=true"
+            )
+        self._gadv_loss_enabled = bool(
+            gadv_requested and getattr(self.model, "use_gender_adversary", False)
+        )
+        self._gadv_weight = float(gadv_cfg.get("weight", 1.0)) if gadv_cfg else 1.0
+        self._gadv_warmup_epochs = int(gadv_cfg.get("warmup_epochs", 0)) if gadv_cfg else 0
+        self._gadv_warmup_start_weight = (
+            float(gadv_cfg.get("warmup_start_weight", 0.0)) if gadv_cfg else 0.0
+        )
+        _scheduled_loss_weight(
+            target_weight=self._gadv_weight,
+            warmup_epochs=self._gadv_warmup_epochs,
+            warmup_start_weight=self._gadv_warmup_start_weight,
+            current_epoch=0,
+        )
+        self._gadv_conditional = bool(getattr(self.model, "gender_adversary_conditional", False))
+        self._gadv_n_bins = int(getattr(self.model, "gender_adversary_n_bins", 0))
+        if self._gadv_loss_enabled and self._gadv_conditional:
+            edges = np.asarray(list(self.cfg.split.occlusion_bins), dtype=float)
+            self.register_buffer(
+                "_gadv_boundaries",
+                torch.tensor(edges[1:-1], dtype=torch.float32),
+                persistent=False,
+            )
+        else:
+            self._gadv_boundaries = None
+
         # ── Distribution-aware regression reweighting (Intervention B) ────
         # Optional per-sample importance reweighting of the regression loss toward a
         # 'balanced' or 'test_matched' occlusion distribution. Reuses the SAME operator as
@@ -457,6 +498,7 @@ class FaceOcclusionLitModule(pl.LightningModule):
         loss_rank, rank_acc = self._compute_ranking_loss(batch)
         loss_bgc = self._compute_bg_consistency_loss(batch, preds)
         loss_shadow = self._compute_shadow_loss(outputs, batch)
+        loss_gadv, gadv_acc = self._compute_gender_adversary_loss(outputs, batch)
         loss = loss_reg
         lambda_ord = self._effective_ordinal_weight() if loss_ord is not None else 0.0
         lambda_cons = self._effective_consistency_weight() if loss_cons is not None else 0.0
@@ -464,6 +506,7 @@ class FaceOcclusionLitModule(pl.LightningModule):
         lambda_rank = self._effective_ranking_weight() if loss_rank is not None else 0.0
         lambda_bgc = self._effective_bg_consistency_weight() if loss_bgc is not None else 0.0
         lambda_shadow = self._effective_shadow_weight() if loss_shadow is not None else 0.0
+        lambda_gadv = self._effective_gender_adversary_weight() if loss_gadv is not None else 0.0
         if loss_ord is not None:
             loss = loss + lambda_ord * loss_ord
         if loss_cons is not None:
@@ -476,6 +519,8 @@ class FaceOcclusionLitModule(pl.LightningModule):
             loss = loss + lambda_bgc * loss_bgc
         if loss_shadow is not None:
             loss = loss + lambda_shadow * loss_shadow
+        if loss_gadv is not None:
+            loss = loss + lambda_gadv * loss_gadv
 
         # Keep `train/loss` = total so existing dashboards continue to work.
         self.log(
@@ -489,7 +534,15 @@ class FaceOcclusionLitModule(pl.LightningModule):
         reweight_on = self._reg_reweight != "none"
         if reweight_on or any(
             loss_x is not None
-            for loss_x in (loss_ord, loss_cons, loss_mono, loss_rank, loss_bgc, loss_shadow)
+            for loss_x in (
+                loss_ord,
+                loss_cons,
+                loss_mono,
+                loss_rank,
+                loss_bgc,
+                loss_shadow,
+                loss_gadv,
+            )
         ):
             self.log(
                 "train/loss_reg", loss_reg, on_step=False, on_epoch=True, batch_size=batch_size
@@ -580,6 +633,21 @@ class FaceOcclusionLitModule(pl.LightningModule):
                 on_step=False,
                 on_epoch=True,
                 batch_size=batch_size,
+            )
+        if loss_gadv is not None:
+            self.log(
+                "train/loss_gadv", loss_gadv, on_step=False, on_epoch=True, batch_size=batch_size
+            )
+            self.log(
+                "train/lambda_gadv",
+                float(lambda_gadv),
+                on_step=False,
+                on_epoch=True,
+                batch_size=batch_size,
+            )
+            # Adversary accuracy: should DROP toward the gender base rate as invariance improves.
+            self.log(
+                "train/gadv_acc", gadv_acc, on_step=False, on_epoch=True, batch_size=batch_size
             )
         opt = self.optimizers()
         if isinstance(opt, list):
@@ -748,6 +816,37 @@ class FaceOcclusionLitModule(pl.LightningModule):
         if self._shadow_loss_type == "l2":
             return torch.mean((pred - target) ** 2)
         return torch.mean(torch.abs(pred - target))
+
+    def _effective_gender_adversary_weight(self) -> float:
+        """Current-epoch gender-adversary coefficient after optional warmup (ramps the reversal)."""
+        return _scheduled_loss_weight(
+            target_weight=self._gadv_weight,
+            warmup_epochs=self._gadv_warmup_epochs,
+            warmup_start_weight=self._gadv_warmup_start_weight,
+            current_epoch=int(self.current_epoch),
+        )
+
+    def _compute_gender_adversary_loss(
+        self, outputs: OcclusionModelOutput, batch
+    ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        """BCE of the gender adversary on gradient-reversed features (DANN); returns (loss, acc).
+
+        The reversed gradient pushes the encoder toward gender-invariant features. When conditional,
+        the occlusion bin is one-hot-appended so only gender info *not explained by occlusion* is
+        removed. Returns ``(None, None)`` when disabled or the batch lacks features/gender.
+        """
+        if not self._gadv_loss_enabled or outputs.features is None or "gender" not in batch:
+            return None, None
+        rev = grad_reverse(outputs.features, 1.0)
+        if self._gadv_conditional and self._gadv_boundaries is not None:
+            occ_bin = torch.bucketize(batch["target"], self._gadv_boundaries)
+            onehot = F.one_hot(occ_bin.clamp(max=self._gadv_n_bins - 1), self._gadv_n_bins).float()
+            rev = torch.cat([rev, onehot], dim=1)
+        logits = self.model.gender_adversary(rev)
+        target = (batch["gender"] == float(self._male_value)).float()
+        loss = F.binary_cross_entropy_with_logits(logits, target)
+        acc = ((logits > 0).float() == target).float().mean().detach()
+        return loss, acc
 
     def _compute_ranking_loss(self, batch) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         """RankNet loss + ordering accuracy over MediaPipe-valid synthetic triples.

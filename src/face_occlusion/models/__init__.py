@@ -1,5 +1,6 @@
 """Public model builders."""
 
+from .adversary import GenderAdversary, grad_reverse
 from .distribution import dldl_kl_loss, expectation, make_bin_centers, soft_label_distribution
 from .ordinal import (
     CONSISTENCY_MODES,
@@ -20,12 +21,14 @@ __all__ = [
     "CONSISTENCY_MODES",
     "DEFAULT_ORDINAL_THRESHOLDS",
     "DEFAULT_ORDINAL_THRESHOLD_WEIGHTS",
+    "GenderAdversary",
     "OcclusionModelOutput",
     "OcclusionRegressor",
     "OrdinalHead",
     "build_model",
     "dldl_kl_loss",
     "expectation",
+    "grad_reverse",
     "make_bin_centers",
     "make_ordinal_targets",
     "soft_label_distribution",

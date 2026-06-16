@@ -9,6 +9,7 @@ import timm
 import torch
 import torch.nn as nn
 
+from .adversary import GenderAdversary
 from .distribution import expectation, make_bin_centers
 from .ordinal import DEFAULT_ORDINAL_THRESHOLDS, OrdinalHead
 from .outputs import OcclusionModelOutput
@@ -40,6 +41,8 @@ class OcclusionRegressor(nn.Module):
         backbone_source: str = "timm",
         use_shadow_head: bool = False,
         shadow_head: dict | None = None,
+        use_gender_adversary: bool = False,
+        gender_adversary: dict | None = None,
     ) -> None:
         super().__init__()
         if output_activation not in {"identity", "sigmoid"}:
@@ -158,6 +161,29 @@ class OcclusionRegressor(nn.Module):
         else:
             self.shadow_head = None
 
+        # Gender-adversary head (training-only): a gradient-reversal MLP that predicts gender from
+        # the pooled features, pushing the encoder toward gender-invariant occlusion features (the
+        # representation-level fix for the gender shortcut — see models/adversary.py). The GRL +
+        # (optional) occlusion conditioning + loss live in the LightningModule, which has the
+        # targets; this just holds the head module. Built before LoRA so it stays trainable.
+        self.use_gender_adversary = bool(use_gender_adversary)
+        if self.use_gender_adversary:
+            ga = dict(gender_adversary) if gender_adversary else {}
+            self.gender_adversary_conditional = bool(ga.get("conditional", True))
+            self.gender_adversary_n_bins = int(ga.get("n_occ_bins", 6))
+            in_f = feat_dim + (
+                self.gender_adversary_n_bins if self.gender_adversary_conditional else 0
+            )
+            self.gender_adversary = GenderAdversary(
+                in_features=in_f,
+                hidden_dim=int(ga.get("hidden_dim", 128)),
+                dropout=float(ga.get("dropout", 0.0)),
+            )
+        else:
+            self.gender_adversary = None
+            self.gender_adversary_conditional = False
+            self.gender_adversary_n_bins = 0
+
         if lora_enabled:
             self._wrap_lora(lora, has_separate_head=mlp_head)
 
@@ -222,6 +248,8 @@ class OcclusionRegressor(nn.Module):
             head_params += list(self.ordinal_head.parameters())
         if self.shadow_head is not None:
             head_params += list(self.shadow_head.parameters())
+        if self.gender_adversary is not None:
+            head_params += list(self.gender_adversary.parameters())
 
         groups = []
         for params, lr in ((head_params, head_lr), (backbone_params, backbone_lr)):
@@ -272,19 +300,21 @@ class OcclusionRegressor(nn.Module):
         if self.head is not None:
             feat = self.backbone(x)
             raw = self.head(feat).squeeze(-1)
+            want_feat = self.shadow_head is not None or self.gender_adversary is not None
             return OcclusionModelOutput(
                 y_pred=self._apply_activation(raw),
-                features=feat if self.shadow_head is not None else None,
+                features=feat if want_feat else None,
                 shadow_pred=self._shadow_from(feat),
             )
 
         # Fast path: with no auxiliary head we keep the exact Stage 0 call
         # (``self.backbone(x)``) so baseline runs stay bit-identical.
-        if self.ordinal_head is None and self.shadow_head is None:
+        if self.ordinal_head is None and self.shadow_head is None and self.gender_adversary is None:
             logits = self.backbone(x).squeeze(-1)
             return OcclusionModelOutput(y_pred=self._apply_activation(logits))
 
-        # Multi-head path: share pooled encoder features between heads (ordinal and/or shadow).
+        # Multi-head path: share pooled encoder features between heads
+        # (ordinal / shadow / gender-adversary).
         feats = self.backbone.forward_features(x)
         pooled = self.backbone.forward_head(feats, pre_logits=True)
         reg_head = self.backbone.get_classifier()
@@ -311,6 +341,15 @@ def build_model(cfg, mean_target: float | None = None) -> OcclusionRegressor:
     use_shadow_head = bool(m.get("use_shadow_head", False))
     shadow_head = m.get("shadow_head", None)
     shadow_head = dict(shadow_head) if shadow_head else None
+    use_gender_adversary = bool(m.get("use_gender_adversary", False))
+    gender_adversary = m.get("gender_adversary", None)
+    gender_adversary = dict(gender_adversary) if gender_adversary else None
+    if use_gender_adversary:
+        gender_adversary = gender_adversary or {}
+        # The conditional adversary one-hots the occlusion bin; derive its width from the split.
+        split_cfg = cfg.get("split", {}) if hasattr(cfg, "get") else {}
+        occ_bins = split_cfg.get("occlusion_bins", None) if split_cfg else None
+        gender_adversary.setdefault("n_occ_bins", (len(list(occ_bins)) - 1) if occ_bins else 6)
     return OcclusionRegressor(
         backbone=m.backbone,
         pretrained=bool(m.pretrained),
@@ -325,4 +364,6 @@ def build_model(cfg, mean_target: float | None = None) -> OcclusionRegressor:
         backbone_source=str(m.get("backbone_source", "timm")),
         use_shadow_head=use_shadow_head,
         shadow_head=shadow_head,
+        use_gender_adversary=use_gender_adversary,
+        gender_adversary=gender_adversary,
     )

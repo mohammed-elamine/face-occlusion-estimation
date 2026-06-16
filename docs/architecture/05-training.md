@@ -36,6 +36,7 @@ loss = λ_reg · loss_reg
      + λ_rank · loss_rank    (synthetic monotonic ranking,     losses.ranking)
      + λ_bgc  · loss_bgc     (background-invariance consistency, losses.bg_consistency)
      + λ_shd  · loss_shadow  (auxiliary shadow-fraction prediction, losses.shadow)
+     + λ_adv  · loss_gadv    (gradient-reversal gender adversary,    losses.gender_adversary)
 ```
 
 Each `λ` is the **effective** (post-warmup) weight from an `_effective_*_weight()` method
@@ -53,6 +54,7 @@ Gating and key config (see [02](02-configuration.md), [04](04-models.md) for the
 | ranking | `losses.ranking.enabled` (+ synthetic views in batch) | `weight`, warmup |
 | bg-consistency | `losses.bg_consistency.enabled` (+ `bg_view_image` in batch) | `weight`, `loss` (l1/l2), warmup |
 | shadow (aux) | `model.use_shadow_head` + `losses.shadow.enabled` (+ `shadow_target` in batch) | `weight`, `loss` (l1/l2), warmup |
+| gender adversary | `model.use_gender_adversary` + `losses.gender_adversary.enabled` | `weight`, warmup; head `conditional` |
 
 Misconfiguration (a coupled loss enabled without the ordinal head) raises `ValueError` at
 `__init__`.
@@ -81,6 +83,21 @@ NaN rows** (images whose `dark_frac` was not precomputed). Targets are produced 
 reads `shadow_pred`. Logged as `train/loss_shadow` / `train/lambda_shadow`. Built on the shared
 pooled features (the linear-head path switches to the same `forward_features` route as the ordinal
 head); the baseline forward stays bit-identical when the head is off.
+
+### Gender-adversary invariance (`model.use_gender_adversary` + `losses.gender_adversary`)
+
+The proper representation-level fix for the gender gap (DFR and loss-only failed because the gender
+shortcut is *entangled in the encoder features*; see `tmp/model_study/05_gender_gap.md`).
+`_compute_gender_adversary_loss` runs the model's `gender_adversary` head on the **gradient-reversed**
+pooled features (`grad_reverse`, `models/adversary.py`) and applies BCE against gender — so the
+reversed gradient pushes the **encoder** toward gender-invariant occlusion features (DANN; Ganin
+et al. 2016). When `gender_adversary.conditional` (default), the occlusion bin is one-hot-appended to
+the adversary input, so only the gender info *not explained by occlusion* is removed (equalized-odds
+style). The warmed `weight` ramps the reversal strength. Logged as `train/loss_gadv` /
+`train/lambda_gadv` / `train/gadv_acc` (adversary accuracy should **fall toward the gender base rate**
+as invariance improves). Best paired with the gender×occ balanced sampler (`sampler.enabled`) and the
+metric-aligned `gender_balanced` loss (`gender_gap_lambda`) — the full recipe is
+`configs/convnext_ablation/10_gender_invariant.yaml`. Training-only; dropped at inference.
 
 ### Distribution-aware reweighting (`losses.regression.reweight`)
 

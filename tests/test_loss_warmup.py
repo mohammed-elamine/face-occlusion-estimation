@@ -143,6 +143,7 @@ def _make_module(*, ord_weight: float, warmup_epochs: int, warmup_start: float =
     module._rank_warmup_start_weight = 0.0
     module._bgc_enabled = False
     module._shadow_loss_enabled = False
+    module._gadv_loss_enabled = False
     module._reg_reweight = "none"
     module._reg_bin_weights = None
     module._reg_edges = None
