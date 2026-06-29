@@ -50,6 +50,5 @@ configs/         # one YAML per experiment + ablation groups
 jobs/            # train.slurm
 ```
 
-> Conventions and gotchas that bite if ignored live in the repo-root `CLAUDE.md`; the
-> prose project guide is `docs/PROJECT_GUIDE.md`. This guide focuses on the **code
-> architecture**.
+> The prose project guide is `docs/PROJECT_GUIDE.md` and contribution conventions are in
+> `CONTRIBUTING.md`. This guide focuses on the **code architecture**.

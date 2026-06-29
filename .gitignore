@@ -99,7 +99,7 @@ slurm-*.out
 *.tgz
 
 
-# Claude Code project memory
+# Local AI-assistant memory (not part of the project)
 CLAUDE.md
 
 # Private local assets (for non-redistributable/manual experiments)
