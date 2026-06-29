@@ -18,7 +18,7 @@ keys on *style*, not on *how covered* the face is.
 Example
 -------
     python -m scripts.analysis.realism_probe \
-        --config configs/synthetic_ranking/02_ranking_realistic_masks.yaml \
+        --config configs/synthetic_ranking/04_ranking_masks_hands.yaml \
         --num-per-class 300
 """
 

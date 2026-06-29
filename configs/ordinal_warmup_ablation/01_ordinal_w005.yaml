@@ -142,7 +142,7 @@ augmentation:
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
-  run_name: oacl_stage12_convnext_small_01_ordinal_only
+  run_name: owa_01_ordinal_w005
   log_images: true
   log_prediction_plots: true
   log_images_every_n_epochs: 1
