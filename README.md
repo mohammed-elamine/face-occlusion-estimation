@@ -368,6 +368,5 @@ face-occlusion-estimation/
 Built with caffeinated determination by:
 
 - **Mohammed Elamine** · [elamine.mohammed.14@gmail.com](mailto:elamine.mohammed.14@gmail.com)
-- **Sara El Mountassir** · [sara.elmountasser@telecom-paris.fr](mailto:sara.elmountasser@telecom-paris.fr)
 
-<sub>Two students vs. occluded faces. What could go wrong?</sub>
+<sub>One student vs. occluded faces. What could go wrong?</sub>
