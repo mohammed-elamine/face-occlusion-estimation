@@ -19,9 +19,8 @@ real images      → regression + ordinal losses (calibration)
 synthetic images → ranking only, never regression
 ```
 
-So the generator exposes only a *severity proxy* (§5) in metadata; it is never
-written into `batch["target"]`. The ranking loss orders the scalar predictions
-`s(clean) < s(mild) < s(strong)`.
+So the generator exposes only a *severity proxy* (§5) in metadata, and the
+ranking loss orders the scalar predictions `s(clean) < s(mild) < s(strong)`.
 
 ## 2. Region provider (MediaPipe)
 
@@ -84,7 +83,7 @@ For an occluder mask `M`, the weighted coverage proxy is:
 
 with default region weights `eyes 1.0, mouth 0.85, nose 0.75, cheeks 0.45,
 forehead_chin 0.35, background 0.0`. `ρ` is clamped to `[0, 1]` and is a coverage
-proxy, **not** a label.
+proxy used only to bin severity (see §1).
 
 Each level (`mild`, `strong`) has an accept band; the generator uses
 acceptance-rejection (up to `max_attempts` retries per level) and enforces
@@ -177,20 +176,20 @@ on-the-fly generator is the fallback):
 
 Ranking compares `synthetic_clean_image` (not the augmented `image`) against
 mild/strong, so the ordering isn't polluted by flip/rotate. Validation/test
-datasets never get synthetic views — evaluation stays clean.
+datasets never get synthetic views — evaluation stays clean. For how the dataset
+and DataModule wire these keys in, see
+[architecture/03-data.md](architecture/03-data.md).
 
-## 10. The ranking loss (Stage 4, implemented)
+## 10. The ranking loss (implemented)
 
-`FaceOcclusionLitModule.training_step` forwards the valid `clean/mild/strong`
-views through the regression head and adds a RankNet term
-`−logσ(s_mild − s_clean) − logσ(s_strong − s_mild)` over `synthetic_valid` rows,
-at a small warmed-up weight (`losses.ranking`). It logs `train/loss_rank`,
-`train/lambda_rank`, and `train/rank_ordering_acc`. See `models/ranking.py`.
+The RankNet mechanics (how the `clean/mild/strong` views are forwarded, the
+warmed-up weight, and the logged `train/loss_rank` / `train/rank_ordering_acc`)
+live in [architecture/05-training.md](architecture/05-training.md).
 
-Because ranking lands on the *calibrated* head, the weight is kept small and
-warmed, and low-bin calibration is watched. The accept/reject rule for the whole
-approach: keep ranking only if **real** high-occlusion error improves within CI
-on both splits — not if synthetic ordering accuracy alone rises.
+What matters here is the accept/reject rule for the whole approach: because
+ranking lands on the *calibrated* regression head, **keep it only if real
+high-occlusion error improves within CI on both splits** — not if synthetic
+ordering accuracy alone rises.
 
 ## 11. Config schema
 
@@ -206,8 +205,9 @@ synthetic_occlusion:
     mild:   { min: 0.08, max: 0.20 }
     strong: { min: 0.28, max: 0.60 }
   mask:                          # realistic_mask params (optional)
-    templates: [surgical, cloth, KN95, N95]
-    compositing: { feather_px: 2.0, harmonize_strength: 0.5, shadow_strength: 0.30 }
+    templates: [surgical, surgical_blue, surgical_green, cloth, KN95, N95]
+    # compositing: { ... }       # illustrative — masks keep their own colour, so
+    #                              the exemplar config omits a mask.compositing block
   hand:                          # realistic_hand params (optional)
     asset_dir: assets_private/occluders/hands
     compositing: { color_match: true, color_match_strength: 0.7 }
@@ -234,7 +234,7 @@ auto-download it to `models/mediapipe/` on demand.
 **Visual / coverage audit** — `scripts/analysis/generate_synthetic_occlusion_audit.py`
 writes an `audit_grid.png` (original | regions | mild | strong), per-sample PNGs,
 row + grouped metric CSVs, and a **coverage-by-bin×gender** table (MediaPipe
-success rate, the Stage 3→4 gate). Use `--coverage-only` for large stats runs and
+success rate, the coverage gate). Use `--coverage-only` for large stats runs and
 `--target-min/--target-max/--database/--gender` to focus.
 
 **Realism probe** — `scripts/analysis/realism_probe.py` trains a synthetic-vs-real

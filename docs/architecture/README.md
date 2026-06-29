@@ -17,10 +17,10 @@ high-occlusion-weighted**, and that single fact drives most of the design (see
 | 01 | [Overview & design philosophy](01-overview.md) | The one core idea (`config + data + split → experiment folder`), repo layout, the metric, end-to-end data flow. |
 | 02 | [Configuration system](02-configuration.md) | `Config` object, how YAML maps to components, the default-OFF gating philosophy, config groups. |
 | 03 | [Data subsystem](03-data.md) | Splits, dataset (the per-item dict), datamodule, transforms, target normalization, samplers, synthetic occlusion, background augmentation, caches. |
-| 04 | [Models](04-models.md) | `OcclusionRegressor` (linear vs MLP head), LoRA wrapping, discriminative param groups, ordinal head, ranking utilities, the output contract. |
+| 04 | [Models](04-models.md) | `OcclusionRegressor` (linear / MLP / distribution head), LoRA wrapping, discriminative param groups, ordinal head, auxiliary heads (shadow, gender-adversary), ranking utilities, the output contract. |
 | 05 | [Training & losses](05-training.md) | `FaceOcclusionLitModule`: the multi-task loss stack, optimizer/scheduler, validation metrics, interrupt-safe finalization, callbacks. |
 | 06 | [Metrics & evaluation](06-metrics-and-evaluation.md) | The challenge metric, bootstrap CIs, evaluation lenses, leakage-free scoring — the CI-first gate. |
-| 07 | [Pipeline & experiments](07-pipeline-and-experiments.md) | The CLI scripts (validate → split → train → predict → analyze → compare), the experiment-folder layout, inference & submission. |
+| 07 | [Pipeline & experiments](07-pipeline-and-experiments.md) | The CLI scripts (validate → split → train → predict → analyze → compare), the experiment-folder layout, single-model and ensemble submission. |
 | 08 | [Cluster & remote](08-cluster-and-remote.md) | SLURM job, RunPod setup/sync/run helpers, the persistent uv cache/venv, the CUDA wheel pinning. |
 | 09 | [Imbalanced regression & expectation head](09-imbalanced-regression-and-expectation-head.md) | The ordered-bin DEX + DLDL/LDS expectation head for the imbalanced tail, as a diverse ensemble member. |
 
@@ -34,19 +34,19 @@ src/face_occlusion/
 │                # synthetic_occlusion + occluders + compositing, caches, mask store
 ├── models/      # regressor (+ build_model factory), ordinal head, ranking, outputs
 ├── metrics/     # challenge_metric, eval_lenses, bootstrap
-├── training/    # lit_module (the LightningModule), callbacks
-├── inference/   # predict_dataframe (TTA, recalibration)
+├── training/    # lit_module (the LightningModule), callbacks, ema
+├── inference/   # predict_dataframe (TTA, recalibration), ensemble averaging
 └── utils/       # config, experiment dirs, reproducibility
 
 scripts/         # CLI entry points (run as `python -m scripts.<group>.<name>`)
-├── data/        # validate_data, make_split, build_synthetic_cache
+├── data/        # validate_data, make_split, build_synthetic_cache, build_face_masks, build_shadow_targets
 ├── training/    # train
-├── inference/   # predict_test
+├── inference/   # predict_test, predict_ensemble
 ├── analysis/    # analyze_val_predictions, bootstrap_metrics, compare_experiments,
 │                # fit_recalibration, generate_synthetic_occlusion_audit
 └── runpod/      # setup_pod, sync_repo_to_remote, run_experiment(_tmux)
 
-configs/         # one YAML per experiment + ablation groups
+configs/         # one YAML per experiment: baseline.yaml + ensemble/ + experiments/ + eval/ (see configs/README.md)
 jobs/            # train.slurm
 ```
 

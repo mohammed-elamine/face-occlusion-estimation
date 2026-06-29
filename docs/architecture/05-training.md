@@ -74,7 +74,7 @@ signal that augmentation only encourages implicitly. The datamodule sets the dat
 
 A training-only multi-task head that predicts the **within-face deep-shadow fraction**
 (`dark_frac`) from the pooled encoder features. Shadow is the one image property found to
-correlate with the occlusion label (ρ≈+0.18; see `tmp/model_study`), so this loss pushes the
+correlate with the occlusion label (ρ≈+0.18 in our analysis), so this loss pushes the
 encoder to represent illumination and predict the genuinely-shadowed tail better. `_compute_shadow_loss`
 applies an `l1`/`l2` loss between `outputs.shadow_pred` and the batch's `shadow_target`, **masking
 NaN rows** (images whose `dark_frac` was not precomputed). Targets are produced offline by
@@ -86,8 +86,8 @@ head); the baseline forward stays bit-identical when the head is off.
 
 ### Gender-adversary invariance (`model.use_gender_adversary` + `losses.gender_adversary`)
 
-The proper representation-level fix for the gender gap (DFR and loss-only failed because the gender
-shortcut is *entangled in the encoder features*; see `tmp/model_study/05_gender_gap.md`).
+The proper representation-level fix for the gender gap (head-refit DFR and loss-only both failed
+because the gender shortcut is *entangled in the encoder features*, not just the head).
 `_compute_gender_adversary_loss` runs the model's `gender_adversary` head on the **gradient-reversed**
 pooled features (`grad_reverse`, `models/adversary.py`) and applies BCE against gender — so the
 reversed gradient pushes the **encoder** toward gender-invariant occlusion features (DANN; Ganin

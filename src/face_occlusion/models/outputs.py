@@ -1,7 +1,7 @@
 """Structured model output contract for occlusion models.
 
 Stage 0 of the occlusion-aware contrastive learning roadmap (see
-``docs/occlusion_aware_contrastive_learning_approach.md``).
+``docs/occlusion_aware_auxiliary_learning.md``).
 
 The current baseline is a pure regression model and only populates ``y_pred``.
 The remaining fields are kept as ``None`` placeholders so that future stages

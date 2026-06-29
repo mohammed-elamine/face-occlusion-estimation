@@ -9,7 +9,8 @@ Each script is thin: it wires library components and writes artifacts.
 ```
 validate_data ─► make_split ─► train ─► (analyze_val_predictions | bootstrap_metrics | compare_experiments)
                                   │
-                                  └─► predict_test ─► submission CSV
+                                  ├─► predict_test ─────► submission CSV (single model)
+                                  └─► predict_ensemble ─► submission CSV (averaged members)  ← best result
             (optional) build_synthetic_cache ─► train with ranking
             (optional) fit_recalibration (diagnostic gate)
 ```
@@ -57,6 +58,25 @@ The Trainer reads only a few keys directly (`max_epochs`, `precision`, `gradient
   `filename, prediction, dummy gender`). `test_students.csv` has only `filename`, so the
   writer adds a dummy `gender` column purely to satisfy the upload format. Validation uses
   **no** TTA so `val/score` stays comparable across runs.
+
+## Ensemble submission — `scripts/inference/predict_ensemble.py` (+ `inference/ensemble.py`)
+
+Averaging decorrelated, individually-tied models is **the lever that beat the single-model
+champion** ([01](01-overview.md)), so it has its own driver.
+
+- `inference/ensemble.py::ensemble_average(member_dfs, weights=None)` — aligns members on
+  `image_id` and averages their `pred_clipped` (optionally weighted) into one submission frame.
+  `score_val_ensemble(member_val_dfs, weights=None)` does the same over each member's
+  `val_predictions.csv` and returns the ensemble `val/score` — so the expected number is
+  confirmed from on-disk CSVs **without** reloading any checkpoint.
+- `predict_ensemble.py --members <run_dir...> [--weights ...] [--tta] [--output-dir]` — fuses
+  members given as **experiment run folders**. For each it reads that member's
+  `test_predictions_extended.csv`, generating it from the member's `config.yaml` + `best.ckpt`
+  if absent (and otherwise telling you to run `predict_test` on the machine holding the
+  checkpoints). It prints the ensemble `val/score` first, then writes the averaged submission.
+
+The shipped members are `configs/baseline.yaml` + `configs/ensemble/*.yaml` — see
+[`configs/README.md`](../../configs/README.md) for which models and why.
 
 ## Analysis — `scripts/analysis/`
 

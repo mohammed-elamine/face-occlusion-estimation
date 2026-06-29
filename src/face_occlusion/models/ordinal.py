@@ -1,7 +1,7 @@
 """Ordinal occlusion-bin head, target builder, and weighted BCE loss.
 
 Stage 1 of the occlusion-aware contrastive learning roadmap
-(see ``docs/occlusion_aware_contrastive_learning_approach.md``).
+(see ``docs/occlusion_aware_auxiliary_learning.md``).
 
 The ordinal head predicts, for each threshold ``t_k``, the logit of the event
 ``y > t_k``. It is **not** a softmax over bins: every threshold is independent

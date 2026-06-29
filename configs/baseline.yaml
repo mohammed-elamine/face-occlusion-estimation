@@ -48,7 +48,7 @@ model:
   pretrained: true
   output_activation: identity   # identity | sigmoid
   dropout: 0.0
-  # Roadmap flags (see docs/occlusion_aware_contrastive_learning_approach.md).
+  # Roadmap flags (see docs/occlusion_aware_auxiliary_learning.md).
   # Default keeps the Stage 0 baseline behavior.
   use_ordinal_head: false
   use_projection_head: false   # Stage 5 roadmap placeholder (not implemented)

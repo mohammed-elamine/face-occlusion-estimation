@@ -45,6 +45,19 @@ checkpoint monitor is `val/score` (`mode: min`). This metric is why:
 - evaluation is **CI-first** with distribution lenses, because the high-occlusion tail is
   tiny and identity-leaked ([06](06-metrics-and-evaluation.md)).
 
+## What actually moved the score (so the rest reads in context)
+
+A single ConvNeXt-Small, fully fine-tuned, is the strong baseline (`val/score ≈ 0.00129`).
+The **one change that beat it beyond noise was ensembling** a handful of decorrelated,
+individually-tied models (`val ≈ 0.00118`, leaderboard `≈ 0.00112`) — see
+[07](07-pipeline-and-experiments.md). Most of the method machinery the later chapters
+describe (ordinal head, consistency, ranking, synthetic occlusion, reweighting,
+gender-adversary, background-invariance) was **explored and largely tied-or-rejected** under
+the CI-first gate ([06](06-metrics-and-evaluation.md)): the high-occlusion tail is so small
+and identity-leaked that almost no single lever moves it within confidence. That honest
+result is the reason the codebase is built as toggleable, default-OFF experiments rather than
+one ever-growing model — and why "diverse ensemble member" is the recurring design goal.
+
 ## End-to-end data flow
 
 ```

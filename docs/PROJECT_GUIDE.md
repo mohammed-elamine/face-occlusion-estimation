@@ -1,517 +1,128 @@
 # Project Guide
 
-This guide explains how the Face Occlusion Estimation project is organized and
-how the main workflow fits together. It is meant to be the reference document
-for teammates who want to train the current baseline, add future model configs,
-or analyze experiment outputs.
+This is the **orientation doc** for someone new to the repository: what the project is, how it
+is laid out, why the tools were chosen, and how to add an experiment. It is deliberately a map,
+not a manual — for the component-by-component technical detail it points into
+[`docs/architecture/`](architecture/README.md), which is the canonical reference.
 
-> For a code-oriented, component-by-component walkthrough of the architecture
-> (with references to the exact files/symbols), see
-> [`docs/architecture/`](architecture/README.md).
+## Project goal
 
-## Project Goal
+Supervised image regression: given one cropped face image (resized to `224 × 224`), predict a
+continuous **occlusion score** `y ∈ [0, 1]` — how much of the face is covered by masks, hands,
+sunglasses, hair, helmets, scarves, blur, or bad crops.
 
-The task is supervised image regression. Each input is a cropped face image,
-normally resized to `224 x 224`, and the model predicts a continuous occlusion
-score in `[0, 1]`.
+The scoring metric is **gender-aware** and **up-weights heavily-occluded faces**, and that single
+fact shapes the whole pipeline (the data keeps `gender` with every item; the loss has a per-gender
+variant; evaluation is confidence-interval-first). The full formula and its consequences are in
+[01 — Overview](architecture/01-overview.md) and [06 — Metrics](architecture/06-metrics-and-evaluation.md).
 
-The target is affected by visible face coverage, hair, masks, sunglasses,
-helmets, hands, scarves, blur, bad crops and other image quality issues. Because
-the challenge metric is gender-aware, the pipeline keeps `gender`, `image_id`,
-`target` and image paths through validation and prediction.
-
-## Baseline vs Future Models
-
-`configs/baseline.yaml` is the starter experiment configuration. It currently
-uses a ConvNeXt-Small backbone for leaderboard-oriented experiments.
-
-The code under `src/face_occlusion/` is a reusable project package for all
-future configs. New experiments should usually be added
-by creating a new YAML file in `configs/`, for example:
+## The mental model
 
 ```text
-configs/efficientnet_b3.yaml
-configs/dinov2_vitl14.yaml
-configs/convnext_base.yaml
+config (YAML)  +  data (CSV + crops)  +  fixed split  →  one self-contained experiment folder
 ```
 
-The same scripts should continue to work:
+`src/face_occlusion/` is a reusable library; **an experiment is a YAML config, not a new script.**
+`scripts/training/train.py` turns one config into one timestamped folder under
+`outputs/experiments/` that carries everything needed to reproduce and analyse it (config snapshot,
+git info, checkpoints, the split it used, per-sample validation predictions, reports). To try a new
+model you copy `configs/baseline.yaml`, change a few keys, and run the same trainer — you never
+write training code.
 
-```bash
-python -m scripts.training.train --config configs/your_config.yaml
-python -m scripts.inference.predict_test --config configs/your_config.yaml --checkpoint <checkpoint>
-```
-
-## Repository Structure
+## Repository structure
 
 ```text
 face-occlusion-estimation/
-|-- assets/                 # Logos and public README illustrations
-|-- configs/                # YAML experiment configs
-|-- data/                   # Local challenge data, ignored by git
-|   `-- raw/
-|       |-- occlusion_datasets/ # train.csv and test_students.csv
-|       `-- crops/
-|           `-- Crop_224_5fp_100K/
-|               |-- database1/
-|               |-- database2/
-|               `-- database3/
-|-- docs/                   # Project-level documentation
-|-- jobs/                   # Slurm launchers and cluster notes
-|-- notebooks/              # Optional exploratory notebooks
-|-- outputs/                # Generated artifacts, ignored by git
-|-- scripts/                # CLI entrypoints for setup, splits, train, predict
-|-- src/face_occlusion/     # Main reusable Python package
-|-- tests/                  # Lightweight unit tests
-|-- Makefile                # Common development commands
-|-- pyproject.toml          # Dependencies and tool configuration
-`-- README.md               # Short project overview and quickstart
+├── assets/          # logos and README illustrations
+├── configs/         # YAML experiments: baseline.yaml + ensemble/ + experiments/ + eval/
+├── data/            # local challenge data (git-ignored): raw/occlusion_datasets/ + raw/crops/
+├── docs/            # this guide, architecture/ (the technical reference), topic notes
+├── jobs/            # Slurm launcher (train.slurm)
+├── notebooks/       # optional exploratory notebooks
+├── outputs/         # generated runs, splits, reports (git-ignored)
+├── scripts/         # CLI entry points: data/ training/ inference/ analysis/ setup/ runpod/
+├── src/face_occlusion/  # the reusable library (data, models, training, metrics, inference, utils)
+├── tests/           # unit tests (metric, data, heads, …)
+├── Makefile         # common dev commands
+└── pyproject.toml   # dependencies + tool config (uv, ruff, pytest)
 ```
 
-## Source Package Map
+The package layout inside `src/face_occlusion/` and the symbols in each module are documented in
+[the architecture guide](architecture/README.md#the-library-at-a-glance) — not repeated here.
 
-```text
-src/face_occlusion/
-|-- data/
-|   |-- dataset.py          # Loads images and preserves per-sample metadata
-|   |-- datamodule.py       # LightningDataModule for train/val/test loaders
-|   |-- splits.py           # Gender x occlusion-bin train/val split logic
-|   `-- transforms.py       # Conservative image transforms
-|-- inference/
-|   `-- predict.py          # Batch prediction helpers returning DataFrames
-|-- metrics/
-|   `-- challenge_metric.py # Weighted and gender-aware challenge metric
-|-- models/
-|   `-- regressor.py        # timm backbone wrapped as a scalar regressor
-|-- training/
-|   |-- callbacks.py        # Checkpoint, early stopping and LR callbacks
-|   `-- lit_module.py       # LightningModule with loss and validation metrics
-`-- utils/
-    |-- config.py           # Small YAML loader with dotted access
-    |-- experiment.py       # Experiment directory and metadata helpers
-    `-- reproducibility.py  # Random seed helper
-```
+## Library choices
 
-## Library Choices
+The project prefers common, well-supported libraries and avoids heavy frameworks unless they
+clearly reduce complexity. The rule: a dependency must improve **reproducibility, readability, or
+experiment speed** in a concrete way, or it stays out.
 
-The project uses common, well-supported libraries and avoids heavy frameworks
-unless they clearly reduce complexity.
-
-| Library | Used For | Why This Choice |
+| Library | Used for | Why |
 |---|---|---|
-| PyTorch | Model definition, tensors, training backend | Flexible research framework with strong computer-vision support. Easier to customize than higher-level APIs for regression with a custom metric. |
-| PyTorch Lightning | Training loop, validation loop, checkpointing, logging | Keeps training code compact and reproducible while still allowing custom losses, metrics and callbacks. Avoids writing a fragile manual training loop. |
-| timm | Pretrained image backbones | Gives access to many modern CNN and transformer backbones through one interface. This makes future configs easy without rewriting model code. |
-| torchvision | Basic image transforms | Enough for the conservative augmentations used here. We avoid heavier augmentation libraries because many occlusion-style augmentations would change the label semantics. |
-| pandas | CSV loading and metadata joins | The challenge data is tabular metadata plus image paths. pandas makes split merging, validation reports and prediction CSVs simple. |
-| NumPy | Metric computation and array handling | Lightweight and reliable for grouped metric calculations outside the GPU training graph. |
-| scikit-learn | Train/validation split | Provides a tested `train_test_split` implementation with stratification support. This is safer than hand-rolling split logic. |
-| Pillow | Image loading | Simple RGB image loading for dataset items. It is enough for this pipeline and keeps image I/O easy to reason about. |
-| OpenCV headless | Optional image-processing support | Available for future image utilities without requiring GUI/system display libraries on the cluster. |
-| PyYAML | Config files | YAML keeps experiment configs readable for a student/team workflow. We intentionally avoid Hydra/OmegaConf for now because the project does not need complex config composition. |
-| Matplotlib / Seaborn | Local plots and reports | Standard plotting tools for validation diagnostics and post-analysis. |
-| W&B, optional | Experiment tracking | Useful on the cluster when enabled, but never required. CSV logs remain the default fallback. |
-| uv | Dependency management | Fast, lock-file based environment setup for local and cluster reproducibility. |
-| Ruff | Linting and formatting | One fast tool replaces several separate tools such as flake8, isort and black. |
-| pytest | Tests | Simple, standard test runner for dataset and metric checks. |
+| **PyTorch** | model, tensors, training backend | Flexible CV framework; easy to customise for regression with a non-standard metric. |
+| **PyTorch Lightning** | training/validation loop, checkpointing, logging | Keeps training code compact and reproducible while still allowing custom losses, metrics, callbacks — no fragile manual loop. |
+| **timm** | pretrained backbones | One interface to many modern CNN/ViT backbones, so new configs need no model code. |
+| **torchvision** | image transforms | Enough for the conservative augmentations used here (heavier occlusion-style augments would corrupt the label). |
+| **pandas / NumPy** | metadata joins, grouped metric math | The data is tabular metadata + image paths; pandas makes splits/reports simple, NumPy handles the grouped metric off-GPU. |
+| **scikit-learn** | stratified split | Tested `train_test_split` is safer than hand-rolled split logic. |
+| **Pillow** | image loading | Simple, reliable RGB I/O. |
+| **PyYAML** | configs | Readable experiment files; we avoid Hydra/OmegaConf because the project needs no config composition. |
+| **Matplotlib / Seaborn** | diagnostics & reports | Standard plotting for validation analysis. |
+| **uv** | dependency management | Fast, lock-file based env for local + cluster reproducibility. |
+| **Ruff** | lint + format | One fast tool replacing flake8/isort/black. |
+| **pytest** | tests | Standard runner for the dataset/metric/head checks. |
+| **W&B** *(optional)* | experiment tracking | Useful on the cluster when enabled; CSV logs are the always-available fallback. |
 
-The main rule is: prefer libraries that make the core workflow clearer. If a new
-dependency does not improve reproducibility, readability or experiment speed in
-a concrete way, keep the project simple.
+## Where the details live
 
-## Configuration Logic
+The deep "how it works" for each subsystem lives in the architecture guide. Start there for any
+of the following instead of looking for it here:
 
-Training is config-driven. The YAML config describes the data, model and training settings. The main training script (`scripts/training/train.py`) turns one config into one reproducible experiment folder with checkpoints, logs, predictions and reports.
-
-Important sections:
-
-| Section | Purpose |
+| You want to understand… | Read |
 |---|---|
-| `project` | Project name, random seed, global output root |
-| `experiment` | Run name, experiment root, metadata options |
-| `data` | CSV paths, image root, column names, target scaling |
-| `split` | Split strategy, occlusion bins, split CSV path |
-| `model` | timm backbone, pretrained flag, output activation, dropout |
-| `training` | Batch size, epochs, optimizer settings, precision |
-| `augmentation` | Resize and conservative image augmentation settings |
-| `logging` | CSV/W&B logging options |
-| `checkpoint` | Monitored validation metric and checkpoint naming |
-
-To create a new model experiment, copy `configs/baseline.yaml`, change
-`experiment.name`, update `model.backbone` and adjust training settings. Keep
-the `data`, `split` and metric-related fields unless there is a deliberate
-reason to change them.
-
-## Data Flow
-
-The training CSV is read from `cfg.data.train_csv`. The dataset expects:
-
-```text
-filename, FaceOcclusion, gender
-```
-
-The project follows the teacher-provided data layout:
-
-```text
-data/
-`-- raw/
-    |-- occlusion_datasets/
-    |   |-- train.csv
-    |   `-- test_students.csv
-    `-- crops/
-        `-- Crop_224_5fp_100K/
-            |-- database1/
-            |-- database2/
-            `-- database3/
-```
-
-CSV filenames remain relative paths such as
-`database3/database3/m.0109kg/0-FaceId-0_align.webp`. The dataset therefore
-loads images with:
-
-```text
-cfg.data.image_root / filename
-```
-
-For the baseline config, `cfg.data.image_root` is
-`data/raw/crops/Crop_224_5fp_100K`.
-
-The exact column names come from the config:
-
-```yaml
-data:
-  image_col: filename
-  target_col: FaceOcclusion
-  gender_col: gender
-  id_col: filename
-```
-
-Gender is encoded as:
-
-```text
-female = 0
-male = 1
-```
-
-`FaceOcclusionDataset` returns dictionaries, not just image tensors. Each
-validation item includes:
-
-```text
-image, target, gender, image_id, filename, path, database, source_subfolder, group_id, face_id
-```
-
-This is intentional. The challenge score depends on gender groups, and
-post-analysis needs image ids, paths and source metadata.
-
-## Split Logic
-
-The default validation split is row-level and stratified by:
-
-```text
-gender x occlusion_bin x database
-```
-
-This keeps the validation set representative across both gender and occlusion
-difficulty while also preserving the hidden database/source distribution.
-
-The split file stores ids, split labels and diagnostic metadata:
-
-```text
-filename, split, database, source_subfolder, group_id, face_id, occlusion_bin, gender
-```
-
-The project saves the split first, then reloads it when building
-`FaceOcclusionDataset`. This is deliberate: the split file fixes which samples
-belong to train and validation, while `train.csv` remains the source of full
-metadata such as target, gender and image path. During setup, the saved split is
-merged back with `train.csv` by `cfg.data.id_col`.
-
-This makes validation scores comparable across configs. A baseline, ConvNeXt
-Small and EfficientNet experiment can all use the exact same validation images
-instead of silently creating different random splits.
-
-Two split strategies are supported:
-
-```text
-row_stratified   # default, leaderboard-oriented comparison
-group_stratified # robustness check with no group_id overlap between train and val
-```
-
-`group_stratified` uses the `database3` `m.<id>` folder as an identity-like
-group. For `database1` and `database2`, where no reliable identity key is
-exposed, the filename is used as the conservative fallback group.
-
-The default baseline uses `row_stratified` because database3 dominates the test
-set and most database3 test identities are already seen in the challenge
-training data. `group_stratified` is intentionally optional: use it for
-robustness checks, not as an automatic second training run for every model.
-
-By default it is written to:
-
-```text
-outputs/splits/canonical_row_split.csv
-```
-
-Training copies the exact split file into the experiment folder so results stay
-reproducible even if the global split file changes later.
-
-To generate a group-level robustness split without changing the baseline split:
-
-```bash
-python -m scripts.data.make_split \
-  --config configs/baseline.yaml \
-  --strategy group_stratified \
-  --split-path outputs/splits/group_robustness_split.csv
-```
-
-For group-level training, copy the model config and set:
-
-```yaml
-split:
-  strategy: group_stratified
-  split_path: outputs/splits/group_robustness_split.csv
-```
-
-The selected final model can later be retrained on all labeled data as a
-separate finalization step. That is intentionally not the default validation
-workflow.
-
-## Training Lifecycle
-
-The main training entrypoint is:
-
-```bash
-python -m scripts.training.train --config configs/baseline.yaml
-```
-
-At startup, `scripts/training/train.py` creates:
-
-```text
-outputs/experiments/<run_id>/
-```
-
-The run id is generated from a timestamp and `experiment.name`, for example:
-
-```text
-2026-05-29_031500_baseline-convnext-small
-```
-
-The training script then:
-
-1. Loads the YAML config.
-2. Creates the run directory.
-3. Saves config, git info and metadata.
-4. Creates or loads the train/val split.
-5. Copies the split into the run directory.
-6. Builds the DataModule, model and LightningModule.
-7. Writes checkpoints and logs inside the run directory.
-8. Validates with the best checkpoint.
-9. Saves per-sample validation predictions.
-10. Prints the experiment directory, best checkpoint and prediction CSV path.
-
-## Experiment Directory
-
-Each training run is self-contained:
-
-```text
-outputs/experiments/<run_id>/
-|-- config.yaml
-|-- metadata.json
-|-- git_commit.txt
-|-- git_status.txt
-|-- checkpoints/
-|   |-- best.ckpt
-|   `-- last.ckpt
-|-- logs/
-|   `-- csv_logs/
-|-- predictions/
-|   `-- val_predictions.csv
-|-- reports/
-`-- splits/
-    `-- canonical_row_split.csv
-```
-
-The most important local analysis artifact is:
-
-```text
-outputs/experiments/<run_id>/predictions/val_predictions.csv
-```
-
-It contains:
-
-```text
-image_id,filename,path,gender,target,pred_raw,pred_clipped,abs_error,database,source_subfolder,group_id,face_id
-```
-
-Use this CSV for error analysis without loading a checkpoint.
-
-For a lightweight post-analysis report:
-
-```bash
-python -m scripts.analysis.analyze_val_predictions \
-  --experiment-dir outputs/experiments/<run_id>
-```
-
-The explicit path mode is still supported:
-
-```bash
-python -m scripts.analysis.analyze_val_predictions \
-  --predictions outputs/experiments/<run_id>/predictions/val_predictions.csv \
-  --output-dir outputs/experiments/<run_id>/reports
-```
-
-The analyzer writes summary metrics, grouped metrics, worst-error tables and
-plots. It reports metrics by gender, occlusion bin, database, database x
-occlusion bin, gender x occlusion bin and database x gender. If the run folder
-contains one split snapshot under `splits/`, or if you pass `--split-csv`, it
-also writes metrics by seen/unseen validation group. Use
-`--save-image-grids --image-root data/raw/crops/Crop_224_5fp_100K` to add small
-qualitative grids of the
-largest errors.
-
-## Metric Logic
-
-The challenge metric is implemented in:
-
-```text
-src/face_occlusion/metrics/challenge_metric.py
-```
-
-It uses a weighted MSE:
-
-```text
-w_i = 1/30 + y_i
-```
-
-High-occlusion samples therefore matter more. The final score combines female
-and male errors:
-
-```text
-score = (Err_F + Err_M) / 2 + abs(Err_F - Err_M)
-```
-
-Predictions are clipped to `[0, 1]` for validation metrics and submissions, but
-raw predictions are still saved because they are useful for diagnosing model
-calibration.
-
-## Prediction Workflow
-
-Generate test predictions with:
-
-```bash
-python -m scripts.inference.predict_test \
-  --config configs/baseline.yaml \
-  --checkpoint outputs/experiments/<run_id>/checkpoints/best.ckpt
-```
-
-If the checkpoint is inside an experiment directory, outputs are written back to:
-
-```text
-outputs/experiments/<run_id>/predictions/
-```
-
-Files produced:
-
-```text
-test_predictions.csv           # Submission-style file
-test_predictions_extended.csv  # Metadata-rich file for analysis
-```
-
-`test_students.csv` contains only `filename`, so test prediction does not assume
-real test gender or target values. The submission writer adds a dummy `gender`
-column because the challenge upload format requires it.
-
-## Cluster Workflow
-
-Set up the cluster environment once:
-
-```bash
-bash scripts/setup/setup_cluster_env.sh
-```
-
-Launch the baseline:
-
-```bash
-sbatch jobs/train.slurm
-```
-
-Launch a custom config:
-
-```bash
-CONFIG_PATH=configs/efficientnet_b3.yaml sbatch jobs/train.slurm
-```
-
-The Slurm script only prepares the runtime and launches training. Experiment
-directory creation stays in `scripts/training/train.py`.
-
-Slurm logs are separate from Lightning logs and are written to:
-
-```text
-outputs/slurm_logs/
-```
-
-## Adding a New Experiment
-
-Recommended steps:
-
-1. Copy `configs/baseline.yaml` to a new config file.
+| The config object and how YAML maps to components | [02 — Configuration](architecture/02-configuration.md) |
+| Splits, the per-item dataset dict, transforms, samplers, synthetic occlusion | [03 — Data](architecture/03-data.md) |
+| Backbones, heads (linear/MLP/distribution/ordinal), LoRA, auxiliary heads | [04 — Models](architecture/04-models.md) |
+| The multi-task loss stack, optimizer, callbacks, EMA | [05 — Training](architecture/05-training.md) |
+| The metric, bootstrap CIs, evaluation lenses, the CI-first gate | [06 — Metrics & Evaluation](architecture/06-metrics-and-evaluation.md) |
+| The CLI scripts, the experiment-folder layout, single-model & ensemble submission | [07 — Pipeline](architecture/07-pipeline-and-experiments.md) |
+| Cluster (Slurm) and RunPod workflows | [08 — Cluster & Remote](architecture/08-cluster-and-remote.md) |
+
+Method write-ups (the *why* behind specific ideas) live in the topic notes:
+[imbalanced regression & the expectation head](architecture/09-imbalanced-regression-and-expectation-head.md),
+[occlusion-aware auxiliary learning](occlusion_aware_auxiliary_learning.md),
+[the balanced-batch sampler](balanced_batch_sampler.md),
+[synthetic occlusion generation](synthetic_occlusion_generation.md).
+
+## Adding a new experiment
+
+1. Copy `configs/baseline.yaml` to a new file (in `configs/experiments/` for a method probe).
 2. Change `experiment.name`.
-3. Change `model.backbone` and any relevant training settings.
-4. Keep `split.split_path` fixed if you want fair comparison against prior runs.
-5. Run locally for syntax/config checks when possible.
-6. Submit on the cluster with `CONFIG_PATH=... sbatch jobs/train.slurm`.
-7. Compare runs using each run's `val_predictions.csv` and logged metrics.
+3. Change `model.backbone` and/or the one or two keys under study — **change one idea at a time**
+   so a paired comparison is meaningful.
+4. Keep `split.split_path` fixed to compare fairly against prior runs on the exact same val images.
+5. Run locally to sanity-check the config, then submit on the cluster:
+   `CONFIG_PATH=configs/experiments/your_config.yaml sbatch jobs/train.slurm`.
+6. Compare against the baseline with `scripts.analysis.compare_experiments` (paired Δ with CIs) —
+   not raw score deltas, because the high-occlusion tail is tiny ([06](architecture/06-metrics-and-evaluation.md)).
 
-Avoid changing several major ideas at once. For example, if you change the
-backbone, keep augmentation and split logic stable unless the experiment is
-specifically about those pieces.
-
-## Development Commands
-
-Common commands:
+## Development commands
 
 ```bash
-make install        # Install dependencies and pre-commit hooks
-make check          # Run lint and format checks
-make format         # Format code with ruff
-make setup-cluster  # Run cluster environment setup script
+make install        # install deps + pre-commit hooks (uv sync --group dev)
+make check          # ruff lint + format check (what CI runs)
+make format         # ruff format .
+uv run pytest       # full test suite (CI does NOT run this — run it locally)
 ```
 
-Data utilities:
+Data utilities (one-time / occasional):
 
 ```bash
-python -m scripts.data.validate_data --config configs/baseline.yaml
-python -m scripts.data.make_split --config configs/baseline.yaml
-python -m scripts.data.make_split --config configs/baseline.yaml \
-  --strategy group_stratified \
-  --split-path outputs/splits/group_robustness_split.csv
+python -m scripts.data.validate_data --config configs/baseline.yaml   # sanity-check data + paths
+python -m scripts.data.make_split    --config configs/baseline.yaml   # write the fixed split CSV
 ```
 
-## Git and Artifact Policy
+## Git & artifact policy
 
-Tracked:
-
-```text
-source code, configs, docs, tests, lightweight .gitkeep files
-```
-
-Ignored:
-
-```text
-data, checkpoints, predictions, experiment outputs, Slurm logs, W&B logs
-```
-
-This keeps the repository clean while allowing each experiment folder to be
-copied or archived separately.
-
-## Mental Model
-
-The project has one central idea:
-
-```text
-config + data + split -> one reproducible experiment folder
-```
-
-The Python package provides reusable building blocks. YAML configs describe
-specific experiments. `scripts/training/train.py` turns one config into one complete run
-folder that can be inspected locally or copied from the cluster.
+Tracked: source, configs, docs, tests. Git-ignored: `data/`, `outputs/` (checkpoints, predictions,
+reports), Slurm/W&B logs. Each experiment folder is self-contained, so a run can be copied or
+archived independently of the repo.

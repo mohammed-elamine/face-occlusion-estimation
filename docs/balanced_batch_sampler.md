@@ -1,5 +1,16 @@
 # Exposure-Capped Soft Gender × Occlusion Balanced Batch Sampler
 
+## Overview
+
+An optional training sampler that over-represents the rare high-occlusion strata
+(per gender) so the model sees the hard regime more often. The key safety knob is
+`max_repeats_per_image`, which caps how many times any one image appears per epoch
+so boosting tiny strata can't become label-noise memorization. Enable it when the
+high-occlusion tail is starved and the gender gap is wide; leave it off otherwise.
+
+For the high-level "where samplers fit" picture, see the *Samplers* section of
+[architecture/03-data.md](architecture/03-data.md); this doc is the deep dive.
+
 ## Motivation
 
 The challenge metric is a **gender-aware weighted MSE**: high-occlusion samples
@@ -19,23 +30,15 @@ problems:
    widens the very gap the metric penalizes.
 
 This sampler addresses both: it provides **moderate, capped** exposure to rare
-real samples, combined with an inverse-frequency gender correction. The
-sampler should not solve high-occlusion rarity alone. Its role is to provide
-moderate, safe exposure to rare real samples, while later synthetic ranking and
-triplet learning provide additional diversity and relative supervision.
+real samples, combined with an inverse-frequency gender correction. It is not
+meant to solve high-occlusion rarity alone — the synthetic-ranking feature
+supplies the additional diversity and relative supervision.
 
-## What was wrong with the old sampler
+This supersedes an earlier uncapped per-slot sampler whose tiny strata could be
+drawn dozens of times per epoch (rare-real exposure silently becoming label-noise
+overfitting). All shipped configs already use the current schema below.
 
-The previous version implemented per-slot draws: for every position in a
-batch, it picked a stratum from a fixed probability vector and then a single
-random index from that stratum. The stratum weights used
-`(n_bin / n_stratum) ** gender_balance_strength`, clipped at
-`max_stratum_weight`. With small `n_stratum` and large bin weights, a stratum
-with only a handful of images could end up with a sampling probability so high
-that the same 2 or 3 images were drawn dozens of times per epoch — silently
-turning rare-real exposure into label-noise overfitting.
-
-## New design
+## Design
 
 For every `(gender, occlusion_bin)` stratum `s` with `n_s` images and bin
 weight `w_b`:
@@ -97,7 +100,7 @@ sampler:
   max_repeats_per_image: 10      # hard per-image cap (key safety knob)
   target: bin_weights            # bin_weights | balanced | test_matched (lens-targeting)
   clip_max: 10.0                 # cap on lens importance weights (balanced/test_matched)
-  drop_last: true                # match the non-sampler loader for ablation equivalence
+  drop_last: false               # drop the trailing partial batch? (shipped configs: false)
   num_samples: null              # null = len(train_dataset)
   seed: 42
 ```
@@ -116,7 +119,7 @@ sampler:
 | `max_repeats_per_image` | Hard upper bound on how many times any single image can appear per epoch (the memorization guard; always enforced). |
 | `target` | Per-bin weighting source: `bin_weights` (the configured dict) or `balanced` / `test_matched`, which reuse the eval-lens operator (`per_bin_importance_weights`) so the sampler targets the **same** distribution as the loss reweighting and the evaluation lenses. |
 | `clip_max` | Cap on the lens importance weights when `target` is `balanced` / `test_matched`. |
-| `drop_last` | Drop the trailing partial batch. Defaults to `true` to match the non-sampler loader, keeping sampler-on vs sampler-off ablations equivalent. |
+| `drop_last` | Whether to drop the trailing partial batch. The shipped configs set `false` (keep every sampled image). |
 | `num_samples` | Target epoch length before capping. `null` uses dataset size. |
 | `seed` | RNG seed for reproducibility. |
 
@@ -187,8 +190,8 @@ genuinely tiny and that the cap is doing useful work.
 ## Risks and trade-offs
 
 - **Reduced bias-correction strength.** Softer defaults mean the sampler alone
-  will *not* close the high-occlusion gap. This is intentional — Stages 3+
-  (synthetic occlusion, ranking, triplet losses) supply additional signal.
+  will *not* close the high-occlusion gap. This is intentional — the
+  synthetic-occlusion and ranking features supply additional signal.
 - **Capped strata stay underexposed.** The cap is a safety net, not a magic
   fix. If `num_capped_strata` is large, consider increasing
   `max_repeats_per_image` cautiously, or expanding the data via synthetic
@@ -197,20 +200,10 @@ genuinely tiny and that the cap is doing useful work.
   the natural distribution. Mitigated by `balance_strength = 0.3` and by group
   norm in modern backbones.
 
-## Alignment with the contrastive roadmap
+## How it fits with synthetic occlusion / ranking
 
-This sampler is the data-side counterpart of Stages 0–2 (regression head,
-ordinal head, regression-ordinal consistency). It is intended to remain in
-place when Stage 3+ adds synthetic occlusion: the new synthetic samples will
-populate currently-tiny strata, the cap will become less binding, and the
-overall sampling distribution will soften back toward natural over time.
-
-## Migration note
-
-The previous sampler was replaced wholesale — there is no opt-in path. All
-shipped configs (`baseline.yaml`, `configs/experiments/balanced_sampler.yaml`, and
-the other `configs/experiments/*.yaml`) have been migrated to
-the new schema with gentler bin weights and the new safety fields. **Any
-Stage 1 / Stage 2 ablations that were run against the old aggressive sampler
-should be re-run with the new schema** before comparing numbers against
-Stage 3+ experiments.
+This sampler is the data-side complement of the regression + ordinal heads: it
+reshapes *which real images* the loss sees. When the synthetic-occlusion feature
+is on, its generated views populate the currently-tiny strata, so the cap becomes
+less binding and the sampled distribution softens back toward natural. The two are
+orthogonal and can be enabled together.

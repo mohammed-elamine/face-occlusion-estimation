@@ -154,8 +154,9 @@ ensembling, analysis reports and cluster jobs — is in the docs below.
 
 | Topic | Where |
 |---|---|
-| Project guide & end-to-end workflow | [`docs/PROJECT_GUIDE.md`](docs/PROJECT_GUIDE.md) |
-| Architecture, component by component | [`docs/architecture/`](docs/architecture/README.md) |
+| Project orientation (layout, tools, how to add an experiment) | [`docs/PROJECT_GUIDE.md`](docs/PROJECT_GUIDE.md) |
+| Architecture, component by component (the technical reference) | [`docs/architecture/`](docs/architecture/README.md) |
+| Method write-ups (the *why*) | [auxiliary learning](docs/occlusion_aware_auxiliary_learning.md), [sampler](docs/balanced_batch_sampler.md), [synthetic occlusion](docs/synthetic_occlusion_generation.md) |
 | Running each stage (data / training / inference / analysis) | the `README.md` inside each `scripts/<area>/` |
 | Experiments & ablations | [`configs/README.md`](configs/README.md) (baseline + ensemble + experiments) |
 | Contributing & dev setup | [`CONTRIBUTING.md`](CONTRIBUTING.md) |

@@ -27,7 +27,7 @@ Downstream code reads `out.y_pred`; auxiliary fields are `None` on the baseline 
 **Head modes (`model.head.type`):**
 
 - `linear` (default): the backbone is created with `num_classes=1`, i.e. timm's own
-  classifier is the head. `forward` is the bit-identical Stage-0 fast path
+  classifier is the head. `forward` is the bit-identical baseline fast path
   (`self.backbone(x)` → activation).
 - `mlp`: the backbone is created with `num_classes=0` (pure feature extractor of
   `num_features`), and a separate head is added:
@@ -80,7 +80,8 @@ alongside any head; the loss + targets are in [05](05-training.md).
 **Gender-adversary head (`model.use_gender_adversary`, `models/adversary.py`):** a small MLP that
 predicts gender from the pooled features, used with a **gradient-reversal layer** to push the
 encoder toward gender-invariant occlusion features — the representation-level fix for the gender
-shortcut (DFR failed; see `tmp/model_study/05_gender_gap.md`). Enabling it makes `forward` expose
+shortcut (a head-refit DFR baseline failed: the gap is entangled in the encoder, not just the head).
+Enabling it makes `forward` expose
 `features`; the GRL, optional occlusion-bin conditioning, and BCE loss live in the LightningModule
 (which has the targets) — [05](05-training.md). Built before LoRA, grouped with the head params,
 **training-only** (dropped at inference). `gender_adversary.conditional` one-hots the occ bin into

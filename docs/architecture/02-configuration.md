@@ -74,7 +74,7 @@ without `model.use_ordinal_head` raises `ValueError` at module init
 (`training/lit_module.py`), and `model.use_ordinal_head` together with an MLP head or LoRA
 raises in `OcclusionRegressor.__init__`.
 
-## Config groups (ablation sets)
+## Config layout
 
 `configs/` holds one YAML per experiment, organised by role (see `configs/README.md` for the
 index):
