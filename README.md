@@ -138,6 +138,41 @@ For the full project architecture and workflow reference, see
 [docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md).
 
 
+## Approach & Results
+
+The whole project is one idea: **`config + data + split → one self-contained experiment
+folder`**. Models are YAML configs, not new scripts — `src/face_occlusion/` is the reusable
+library, and every run lands in `outputs/experiments/<id>/` with its config, checkpoints,
+predictions and reports. The full method write-ups (one page per component) live in
+[`docs/architecture/`](docs/architecture/README.md).
+
+**What we explored** (all config-gated, default off):
+
+- **Backbones** — a fully fine-tuned **ConvNeXt-Small** (our strongest single model) and
+  **DINOv2 ViT-B + LoRA** (`configs/convnext_ablation/`, `configs/dinov2_lora/`).
+- **Metric-aligned & imbalanced-regression losses** — gender-balanced weighted MSE, an
+  ordered-bin **expectation head (DEX + DLDL/LDS)**, an ordinal-threshold head, distribution-aware
+  reweighting, and a synthetic monotonic-ranking objective (`configs/imbalanced_regression/`,
+  `configs/synthetic_ranking/`, `configs/ordinal_warmup_ablation/`,
+  [`docs/architecture/09-imbalanced-regression-and-expectation-head.md`](docs/architecture/09-imbalanced-regression-and-expectation-head.md)).
+- **Sampling & augmentation** — a gender×occlusion balanced-batch sampler, background-invariance
+  augmentation, and a label-aware synthetic-occlusion pipeline
+  ([`docs/balanced_batch_sampler.md`](docs/balanced_batch_sampler.md),
+  [`docs/synthetic_occlusion_generation.md`](docs/synthetic_occlusion_generation.md)).
+- **Fairness for the gender gap** — Deep Feature Reweighting (`scripts/analysis/fit_dfr.py`) and a
+  gradient-reversal gender adversary (`configs/convnext_ablation/10_gender_invariant.yaml`).
+- **Combining models** — EMA weight averaging and **prediction ensembling**
+  (`scripts/inference/predict_ensemble.py`).
+
+**What worked.** Under a bootstrap-CI gate, no single architectural or loss lever beat a
+well-tuned ConvNeXt-Small; the one reliable win came from **ensembling decorrelated,
+individually-tied models** (validation ≈ `0.00118`, leaderboard ≈ `0.00112`). The remaining error
+is **data-bound**: the rare high-occlusion tail (only ~8 training faces above occlusion `0.6`) and
+the gender gap resist every model-side fix, which our analyses trace to scarcity and label noise
+rather than the model. Evaluation is CI-first — we gate every change with paired-Δ bootstrap
+confidence intervals (`scripts/analysis/compare_experiments.py`, `bootstrap_metrics.py`).
+
+
 ## Config-Driven Pipeline
 
 The reusable training code lives under `src/face_occlusion/`. The current
@@ -167,17 +202,26 @@ python -m scripts.inference.predict_test \
 When the checkpoint comes from an experiment folder, test predictions are saved
 back into that same run's `predictions/` directory.
 
+Our best submission is an **ensemble** of a few decorrelated runs. Once each member has
+test predictions, average them into one submission:
+
+```bash
+python -m scripts.inference.predict_ensemble \
+  --members outputs/experiments/<run_a> outputs/experiments/<run_b> outputs/experiments/<run_c>
+# -> outputs/ensemble_submission/test_predictions.csv  (prints the ensemble val score first)
+```
+
 Design choices worth knowing:
 
 - **Backbone — `convnext_small.fb_in22k_ft_in1k`.** Strong ImageNet-22k features
   with more capacity than Tiny for leaderboard-oriented experiments, while still
   being practical on a single GPU. Easy to swap with any `timm` model via
   `model.backbone` in the config.
-- **Augmentation is conservative.** We avoid RandomErasing, heavy blur,
-  random crops and synthetic occlusion: they change the *true* face
-  visibility while the original label stays the same, which silently
-  corrupts supervision. Only horizontal flip, mild color jitter and a
-  small rotation are used.
+- **Augmentation is conservative by default.** The standard path avoids RandomErasing,
+  heavy blur, random crops and occlusion: they change the *true* face visibility while the
+  original label stays the same, which silently corrupts supervision. Only horizontal flip,
+  mild color jitter and a small rotation are used. (A separate, opt-in, **label-aware**
+  synthetic-occlusion pipeline exists for the ranking objective — see the docs.)
 - **Metric is gender-aware.** Validation reports the official score
   `(Err_F + Err_M)/2 + |Err_F - Err_M|`, so we keep `gender` in every batch
   and stratify the default validation split on `gender x occlusion_bin x database`.
@@ -313,7 +357,7 @@ sbatch jobs/train.slurm
 Launch a custom config:
 
 ```bash
-CONFIG_PATH=configs/efficientnet_b3.yaml sbatch jobs/train.slurm
+CONFIG_PATH=configs/convnext_ablation/01_convnext_base.yaml sbatch jobs/train.slurm
 ```
 
 Slurm logs are saved under `outputs/slurm_logs/`. Experiment directories are
@@ -324,23 +368,19 @@ created and managed by `scripts/training/train.py`, not by the Slurm script.
 
 ```text
 face-occlusion-estimation/
-├── .github/workflows/      # CI pipelines
-├── assets/
-│   ├── illustrations/      # Public-domain cartoon and meme fuel
-│   └── logos/              # Challenge logos
-├── data/                   # Local data folder, not tracked
-│   └── raw/
-│       ├── occlusion_datasets/ # train.csv and test_students.csv
-│       └── crops/
-│           └── Crop_224_5fp_100K/
-│               ├── database1/
-│               ├── database2/
-│               └── database3/
-├── docs/                   # Detailed project guide
-├── scripts/                # Dev utility scripts
-├── src/face_occlusion/     # Main Python package
+├── configs/                # Experiments as YAML: baseline.yaml + ablation groups (each with a README)
+├── src/face_occlusion/     # Reusable library: data/ models/ training/ metrics/ inference/ utils/
+├── scripts/                # CLI entry points: data/ training/ inference/ analysis/ setup/ runpod/
+├── docs/                   # PROJECT_GUIDE + architecture/ (component-by-component) + topic notes
+├── tests/                  # pytest suite (uv run pytest)
+├── jobs/                   # Slurm job scripts (train.slurm)
+├── notebooks/              # EDA & split-diagnostics notebooks
+├── data/                   # Local data, git-ignored (raw/occlusion_datasets + raw/crops/...)
+├── outputs/                # Experiment folders, splits, logs — git-ignored
+├── assets/                 # Challenge logos & illustrations
+├── .github/workflows/      # CI (ruff + pre-commit)
 ├── Makefile                # Local dev commands (make help)
-├── pyproject.toml          # Project config & dependencies
+├── pyproject.toml          # Dependencies & tooling config
 └── README.md
 ```
 
