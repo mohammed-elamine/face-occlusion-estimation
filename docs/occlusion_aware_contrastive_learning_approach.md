@@ -1728,10 +1728,11 @@ the previous static behaviour. The training step logs `train/lambda_ord` and
 easy to verify from `metrics.csv`. Validation diagnostics (`val/ord_loss`,
 `val/cons_loss`) stay unweighted on purpose.
 
-**Recommended ordinal experiments.** The dedicated ablation lives under
-[configs/ordinal_warmup_ablation/](../configs/ordinal_warmup_ablation/) and
-compares static vs. warmed-up ordinal weights at $\lambda \in \{0.05, 0.10\}$
-on top of the exposure-capped sampler.
+**Recommended ordinal experiments.** The exemplar lives at
+[configs/experiments/ordinal_head.yaml](../configs/experiments/ordinal_head.yaml) — a
+warmed-up ordinal head ($\lambda = 0.05$) on top of the exposure-capped sampler;
+[configs/experiments/ordinal_consistency.yaml](../configs/experiments/ordinal_consistency.yaml)
+adds the regression↔ordinal consistency term.
 
 Warmup is currently intended mainly for the ordinal loss. Consistency
 warmup is supported for future experiments, but consistency remains disabled

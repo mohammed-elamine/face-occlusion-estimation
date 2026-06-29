@@ -1,11 +1,17 @@
-# Ablation 02 — METRIC-ALIGNED LOSS: weighted_mse -> gender_balanced (only change vs 00).
-# The champion trains pooled weighted_mse, but the metric is 0.5(Err_F+Err_M)+|gap|.
-# gender_balanced computes per-gender weighted MSE then averages (gap_lambda=0), directly
-# matching the metric's structure and up-weighting the minority gender. Targets the gap term
-# (~43% of the score). Optional follow-up: gender_gap_lambda > 0 to penalize the gap explicitly.
-project: {name: face-occlusion-estimation, seed: 42, output_dir: outputs, deterministic: false}
+# Champion + auxiliary shadow head (multi-task). Same recipe as baseline.yaml, plus a small head
+# that predicts the within-face deep-shadow fraction (dark_frac) — the one image property that
+# correlates with the occlusion label (see tmp/model_study). Goal: push the encoder to represent
+# illumination so it predicts the genuinely-shadowed tail better; the aux head is dropped at
+# inference. PREREQUISITE: precompute targets once with
+#   python -m scripts.data.build_shadow_targets --config configs/experiments/shadow_head.yaml
+# Gate vs the champion with compare_experiments (paired-Δ + bootstrap CI).
+project:
+  name: face-occlusion-estimation
+  seed: 42
+  output_dir: outputs
+  deterministic: false
 experiment:
-  name: cnx_ablation_02_gender_balanced
+  name: shadow_head
   output_root: outputs/experiments
   save_git_info: true
   save_config: true
@@ -24,6 +30,7 @@ data:
   target_scale: auto
   val_size: 0.2
   num_workers: 8
+  shadow_targets_csv: data/shadow_targets/train_dark_frac.csv
 split:
   strategy: row_stratified
   occlusion_bins: [0.0, 0.05, 0.1, 0.2, 0.4, 0.6, 1.0]
@@ -39,15 +46,19 @@ model:
   output_activation: identity
   dropout: 0.0
   use_ordinal_head: false
+  use_shadow_head: true
+  shadow_head: {hidden_dim: 64, dropout: 0.0}
 losses:
-  regression: {type: gender_balanced, reweight: none, high_occ_power: 1.0, gender_gap_lambda: 0.0}  # CHANGED
+  regression: {type: weighted_mse, reweight: none}
   ordinal: {enabled: false}
   consistency: {enabled: false}
   monotonicity: {enabled: false}
   ranking: {enabled: false}
   triplet: {enabled: false}
+  shadow: {enabled: true, weight: 0.2, loss: l2, warmup_epochs: 0}
 synthetic_occlusion: {enabled: false}
 triplet_sampling: {enabled: false}
+sampler: {enabled: false}
 training:
   batch_size: 64
   max_epochs: 20
@@ -70,11 +81,9 @@ augmentation:
   background: {enabled: false}
 inference:
   tta: false
+checkpoint: {monitor: val/score, mode: min, save_top_k: 1, filename: best}
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
-  run_name: cnx_ablation_02_gender_balanced
+  run_name: shadow_head
   log_images: false
-  log_prediction_plots: true
-sampler: {enabled: false}
-checkpoint: {monitor: val/score, mode: min, save_top_k: 1, filename: best}

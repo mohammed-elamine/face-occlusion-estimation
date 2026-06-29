@@ -8,7 +8,7 @@ generator can be inspected before being plugged into training.
 Example
 -------
     python scripts/analysis/generate_synthetic_occlusion_audit.py \\
-        --config configs/synthetic_ranking/04_ranking_masks_hands.yaml \\
+        --config configs/experiments/synthetic_ranking.yaml \\
         --num-samples 16 \\
         --output-dir outputs/reports/synthetic_occlusion_audit
 """

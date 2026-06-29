@@ -1,17 +1,13 @@
-# Champion + auxiliary shadow head (multi-task). Same recipe as 00_baseline, plus a small head
-# that predicts the within-face deep-shadow fraction (dark_frac) — the one image property that
-# correlates with the occlusion label (see tmp/model_study). Goal: push the encoder to represent
-# illumination so it predicts the genuinely-shadowed tail better; the aux head is dropped at
-# inference. PREREQUISITE: precompute targets once with
-#   python -m scripts.data.build_shadow_targets --config configs/convnext_ablation/09_shadow_aux_head.yaml
-# Gate vs the champion with compare_experiments (paired-Δ + bootstrap CI).
-project:
-  name: face-occlusion-estimation
-  seed: 42
-  output_dir: outputs
-  deterministic: false
+# Ensemble member — ordered-bin EXPECTATION head (DEX) + DLDL/LDS soft labels (vs baseline.yaml).
+# Reframes regression as label-distribution learning over K ordered occlusion bins: predict a
+# softmax over bins, train against Gaussian (LDS) soft labels so the data-poor tail borrows
+# strength from neighbours, and output the expectation E[y] = sum_k p_k*c_k. A decorrelated,
+# diverse member for the prediction ensemble (its objective is classification, not MSE).
+# See docs/architecture/09-imbalanced-regression-and-expectation-head.md. Champion backbone +
+# full fine-tune, seed 42. (A 09_..._ema variant can add EMA for a stronger member.)
+project: {name: face-occlusion-estimation, seed: 42, output_dir: outputs, deterministic: false}
 experiment:
-  name: cnx_ablation_09_shadow_aux_head
+  name: expectation_dldl
   output_root: outputs/experiments
   save_git_info: true
   save_config: true
@@ -30,7 +26,6 @@ data:
   target_scale: auto
   val_size: 0.2
   num_workers: 8
-  shadow_targets_csv: data/shadow_targets/train_dark_frac.csv
 split:
   strategy: row_stratified
   occlusion_bins: [0.0, 0.05, 0.1, 0.2, 0.4, 0.6, 1.0]
@@ -43,22 +38,26 @@ split:
 model:
   backbone: convnext_small.fb_in22k_ft_in1k
   pretrained: true
-  output_activation: identity
+  output_activation: identity          # ignored: the expectation is bounded by construction
   dropout: 0.0
   use_ordinal_head: false
-  use_shadow_head: true
-  shadow_head: {hidden_dim: 64, dropout: 0.0}
+  head:
+    type: distribution                 # softmax over K ordered bins -> expectation
+    n_bins: 21                         # centers 0.00, 0.05, ..., 1.00
+    range: [0.0, 1.0]
 losses:
-  regression: {type: weighted_mse, reweight: none}
+  regression:
+    type: dldl                         # KL to Gaussian (LDS) soft labels + expectation MSE
+    lds_sigma: 0.05                    # label-distribution smoothing width (~1 bin)
+    expectation_weight: 1.0            # weight of the metric-weighted MSE on E[y]
+    reweight: none
   ordinal: {enabled: false}
   consistency: {enabled: false}
   monotonicity: {enabled: false}
   ranking: {enabled: false}
   triplet: {enabled: false}
-  shadow: {enabled: true, weight: 0.2, loss: l2, warmup_epochs: 0}
 synthetic_occlusion: {enabled: false}
 triplet_sampling: {enabled: false}
-sampler: {enabled: false}
 training:
   batch_size: 64
   max_epochs: 20
@@ -81,9 +80,11 @@ augmentation:
   background: {enabled: false}
 inference:
   tta: false
-checkpoint: {monitor: val/score, mode: min, save_top_k: 1, filename: best}
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
-  run_name: cnx_ablation_09_shadow_aux_head
+  run_name: expectation_dldl
   log_images: false
+  log_prediction_plots: true
+sampler: {enabled: false}
+checkpoint: {monitor: val/score, mode: min, save_top_k: 1, filename: best}

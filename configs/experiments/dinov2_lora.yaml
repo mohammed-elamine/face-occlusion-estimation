@@ -8,7 +8,7 @@ project:
   output_dir: outputs
   deterministic: false
 experiment:
-  name: dinov2_vitb_reg_lora_full
+  name: dinov2_lora
   output_root: outputs/experiments
   save_git_info: true
   save_config: true
@@ -96,7 +96,7 @@ inference:
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
-  run_name: dinov2_vitb_reg_lora_full
+  run_name: dinov2_lora
   log_images: false
   log_prediction_plots: true
   log_images_every_n_epochs: 1

@@ -76,17 +76,16 @@ raises in `OcclusionRegressor.__init__`.
 
 ## Config groups (ablation sets)
 
-`configs/` holds one YAML per experiment plus grouped ablation sets, each with its own
-README:
+`configs/` holds one YAML per experiment, organised by role (see `configs/README.md` for the
+index):
 
-- `configs/dinov2_lora/` — DINOv2 ViT-B + LoRA recipes (`01_..._plain`, `02_..._full`, and
-  precision/sampler ablations).
-- `configs/imbalanced_regression/` — `losses.regression.reweight` ablations (baseline,
-  balanced, test_matched, sampler).
-- `configs/synthetic_ranking/` — ranking-loss ablations (baseline vs ranking + occluder
-  variants).
-- `configs/ordinal_warmup_ablation/` — ordinal head + warmup variants.
-- `configs/occlusion_aware_contrastive/` — Stage-3+ contrastive variants.
+- `configs/baseline.yaml` — the canonical ConvNeXt-Small champion; the paired-Δ reference.
+- `configs/ensemble/` — the members that, averaged with the baseline, give the best submission
+  (`convnext_base`, `gender_balanced`, `sigmoid`, `expectation_dldl`).
+- `configs/experiments/` — one runnable exemplar per explored method (DINOv2+LoRA, synthetic
+  ranking, distribution reweighting, ordinal head, ordinal consistency, background invariance,
+  balanced sampler, shadow head, gender invariance).
+- `configs/eval/` — non-training helpers (e.g. `test_distribution.yaml`).
 
 The convention for a new run: copy the closest existing config, change `experiment.name`
 and the one or two keys under study, and keep everything else identical so a paired

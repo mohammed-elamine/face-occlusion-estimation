@@ -1,12 +1,11 @@
-# Ordinal-head warmup ablation: Ordinal head with weight 0.05 (no warmup).
-# Adds ordinal occlusion-bin classification on top of the baseline.
+# Occlusion-aware contrastive learning Stage 1/2 ablation: ordinal head + symmetric consistency (Stage 2, safe default).
 project:
   name: face-occlusion-estimation
   seed: 42
   output_dir: outputs
 
 experiment:
-  name: owa_01_ordinal_w005
+  name: ordinal_consistency
   output_root: outputs/experiments
   save_git_info: true
   save_config: true
@@ -48,12 +47,12 @@ model:
 losses:
   ordinal:
     enabled: true
-    weight: 0.05
+    weight: 0.2
     warmup_epochs: 0
     warmup_start_weight: 0.0
     threshold_weights: [1.0, 1.0, 1.2, 2.0, 3.0]
   consistency:
-    enabled: false
+    enabled: true
     weight: 0.05
     warmup_epochs: 0
     warmup_start_weight: 0.0
@@ -142,7 +141,7 @@ augmentation:
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
-  run_name: owa_01_ordinal_w005
+  run_name: ordinal_consistency
   log_images: true
   log_prediction_plots: true
   log_images_every_n_epochs: 1

@@ -1,12 +1,12 @@
-# Baseline ConvNeXt-Tiny with Gender × Occlusion Balanced Batch Sampler.
-# Identical to baseline.yaml except sampler is enabled.
+# Ordinal-head warmup ablation: Ordinal head with weight 0.05 (no warmup).
+# Adds ordinal occlusion-bin classification on top of the baseline.
 project:
   name: face-occlusion-estimation
   seed: 42
   output_dir: outputs
 
 experiment:
-  name: baseline-convnext-tiny-gender-occ-sampler
+  name: ordinal_head
   output_root: outputs/experiments
   save_git_info: true
   save_config: true
@@ -37,34 +37,28 @@ split:
   group_col: group_id
 
 model:
-  backbone: convnext_tiny.fb_in22k_ft_in1k
+  backbone: convnext_small.fb_in22k_ft_in1k
   pretrained: true
   output_activation: identity
   dropout: 0.0
-  # Roadmap flags (see docs/occlusion_aware_contrastive_learning_approach.md).
-  # Default keeps the Stage 0 baseline behavior.
-  use_ordinal_head: false
+  use_ordinal_head: true
   use_projection_head: false
-  # Stage 1: ordinal-head thresholds used when use_ordinal_head=true.
-  # Each threshold t_k corresponds to a logit predicting P(y > t_k).
   ordinal_thresholds: [0.05, 0.10, 0.20, 0.40, 0.60]
 
-# Multi-task loss components for later stages.
-# Disabled by default; only the regression loss above is active.
 losses:
   ordinal:
-    enabled: false
-    weight: 0.2                    # lambda_ord in loss_total = loss_reg + lambda_ord * loss_ord
-    warmup_epochs: 0               # 0 disables warmup; >0 ramps from warmup_start_weight to weight
-    warmup_start_weight: 0.0
-    threshold_weights: [1.0, 1.0, 1.2, 2.0, 3.0]  # per-threshold BCE weights
-  consistency:
-    enabled: false
-    weight: 0.05                    # lambda_cons in loss_total
+    enabled: true
+    weight: 0.05
     warmup_epochs: 0
     warmup_start_weight: 0.0
-    temperature: 0.05               # sharpness of regression-implied threshold probs
-    mode: symmetric                 # symmetric | ordinal_as_teacher | regression_as_teacher
+    threshold_weights: [1.0, 1.0, 1.2, 2.0, 3.0]
+  consistency:
+    enabled: false
+    weight: 0.05
+    warmup_epochs: 0
+    warmup_start_weight: 0.0
+    temperature: 0.05
+    mode: symmetric
   ranking:
     enabled: false
   triplet:
@@ -148,7 +142,7 @@ augmentation:
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
-  run_name: baseline-convnext-tiny-gender-occ-sampler
+  run_name: ordinal_head
   log_images: true
   log_prediction_plots: true
   log_images_every_n_epochs: 1

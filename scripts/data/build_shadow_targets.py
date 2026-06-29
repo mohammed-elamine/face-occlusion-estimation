@@ -5,7 +5,7 @@ These are the targets for the auxiliary shadow head (``model.use_shadow_head``).
 run once; the datamodule merges the resulting CSV onto the train rows by ``id_col``.
 
     python -m scripts.data.build_shadow_targets \
-        --config configs/convnext_ablation/09_shadow_aux_head.yaml
+        --config configs/experiments/shadow_head.yaml
 
 Output CSV columns: ``<id_col>, dark_frac`` (NaN when the face mesh could not be fit). Needs the
 ``synthetic`` extra (mediapipe) and the face-landmarker model (``make mediapipe-model``).

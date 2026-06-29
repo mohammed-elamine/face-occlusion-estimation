@@ -150,10 +150,10 @@ proportionally to their `p_s`.
 
 ```bash
 # Local
-.venv/bin/python -m scripts.train --config configs/convnext_tiny_gender_occ_sampler.yaml
+.venv/bin/python -m scripts.training.train --config configs/experiments/balanced_sampler.yaml
 
 # Cluster
-CONFIG_PATH=configs/convnext_tiny_gender_occ_sampler.yaml sbatch jobs/train.slurm
+CONFIG_PATH=configs/experiments/balanced_sampler.yaml sbatch jobs/train.slurm
 ```
 
 At startup the sampler logs a per-stratum table and writes
@@ -208,8 +208,8 @@ overall sampling distribution will soften back toward natural over time.
 ## Migration note
 
 The previous sampler was replaced wholesale — there is no opt-in path. All
-shipped configs (`baseline.yaml`, `convnext_tiny_gender_occ_sampler.yaml`, and
-the `configs/occlusion_aware_contrastive/*.yaml` family) have been migrated to
+shipped configs (`baseline.yaml`, `configs/experiments/balanced_sampler.yaml`, and
+the other `configs/experiments/*.yaml`) have been migrated to
 the new schema with gentler bin weights and the new safety fields. **Any
 Stage 1 / Stage 2 ablations that were run against the old aggressive sampler
 should be re-run with the new schema** before comparing numbers against

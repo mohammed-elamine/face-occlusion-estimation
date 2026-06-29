@@ -1,6 +1,6 @@
-# Stage 4 + masks AND hands: the diversity config (one occluder per view).
-# Consumes a precomputed cache (build it first; see configs/synthetic_ranking/README.md).
-# Compare against 00_baseline using scripts.analysis.bootstrap_metrics on BOTH splits.
+# Synthetic ranking exemplar: masks AND hands (one occluder per view) for occluder diversity.
+# Consumes a precomputed cache (build it first; see docs/synthetic_occlusion_generation.md).
+# Compare against baseline.yaml using scripts.analysis.bootstrap_metrics on BOTH splits.
 project:
   name: face-occlusion-estimation
   seed: 42
@@ -8,7 +8,7 @@ project:
   deterministic: false
 
 experiment:
-  name: sr_04_ranking_masks_hands
+  name: synthetic_ranking
   output_root: outputs/experiments
   save_git_info: true
   save_config: true
@@ -141,7 +141,7 @@ augmentation:
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
-  run_name: sr_04_ranking_masks_hands
+  run_name: synthetic_ranking
   log_images: true
   log_prediction_plots: true
   log_images_every_n_epochs: 1

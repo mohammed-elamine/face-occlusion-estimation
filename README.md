@@ -157,7 +157,7 @@ ensembling, analysis reports and cluster jobs — is in the docs below.
 | Project guide & end-to-end workflow | [`docs/PROJECT_GUIDE.md`](docs/PROJECT_GUIDE.md) |
 | Architecture, component by component | [`docs/architecture/`](docs/architecture/README.md) |
 | Running each stage (data / training / inference / analysis) | the `README.md` inside each `scripts/<area>/` |
-| Experiments & ablations | the `README.md` inside each `configs/<group>/` |
+| Experiments & ablations | [`configs/README.md`](configs/README.md) (baseline + ensemble + experiments) |
 | Contributing & dev setup | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 
 
@@ -165,7 +165,7 @@ ensembling, analysis reports and cluster jobs — is in the docs below.
 
 ```text
 face-occlusion-estimation/
-├── configs/                # Experiments as YAML: baseline.yaml + ablation groups (each with a README)
+├── configs/                # Experiments as YAML: baseline.yaml + ensemble/ + experiments/ + eval/
 ├── src/face_occlusion/     # Reusable library: data/ models/ training/ metrics/ inference/ utils/
 ├── scripts/                # CLI entry points: data/ training/ inference/ analysis/ setup/ runpod/
 ├── docs/                   # PROJECT_GUIDE + architecture/ (component-by-component) + topic notes

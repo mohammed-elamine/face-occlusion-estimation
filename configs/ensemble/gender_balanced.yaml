@@ -1,21 +1,11 @@
-# Champion + gender-invariant training recipe — the proper representation-level fix for the gender
-# gap (DFR/head-only and gender_balanced-loss-only both failed; the shortcut is entangled in the
-# encoder). Three coordinated levers:
-#   (1) gender×occlusion balanced-batch SAMPLER — the encoder sees occluded males as often as
-#       occluded females (builds gender-invariant occlusion features);
-#   (2) metric-aligned LOSS — gender_balanced with gender_gap_lambda=1.0 = (Err_F+Err_M)/2+|gap|;
-#   (3) gradient-reversal gender ADVERSARY (conditional on occ bin) — removes the residual gender
-#       shortcut from the representation.
-# Watch: train/loss_gadv should RISE and train/gadv_acc DROP toward the gender base rate as
-# invariance kicks in. Gate vs the champion on val score AND the gap (+ rerun gender_gap_analysis.py
-# to confirm beta(is_male)->0). seed 42.
-project:
-  name: face-occlusion-estimation
-  seed: 42
-  output_dir: outputs
-  deterministic: false
+# Ensemble member — METRIC-ALIGNED LOSS: weighted_mse -> gender_balanced (only change vs baseline.yaml).
+# The champion trains pooled weighted_mse, but the metric is 0.5(Err_F+Err_M)+|gap|.
+# gender_balanced computes per-gender weighted MSE then averages (gap_lambda=0), directly
+# matching the metric's structure and up-weighting the minority gender. Targets the gap term
+# (~43% of the score). Optional follow-up: gender_gap_lambda > 0 to penalize the gap explicitly.
+project: {name: face-occlusion-estimation, seed: 42, output_dir: outputs, deterministic: false}
 experiment:
-  name: cnx_ablation_10_gender_invariant
+  name: gender_balanced
   output_root: outputs/experiments
   save_git_info: true
   save_config: true
@@ -49,22 +39,15 @@ model:
   output_activation: identity
   dropout: 0.0
   use_ordinal_head: false
-  use_gender_adversary: true
-  gender_adversary: {hidden_dim: 128, conditional: true, dropout: 0.0}
 losses:
-  regression: {type: gender_balanced, gender_gap_lambda: 1.0, reweight: none}
+  regression: {type: gender_balanced, reweight: none, high_occ_power: 1.0, gender_gap_lambda: 0.0}  # CHANGED
   ordinal: {enabled: false}
   consistency: {enabled: false}
   monotonicity: {enabled: false}
   ranking: {enabled: false}
   triplet: {enabled: false}
-  gender_adversary: {enabled: true, weight: 1.0, warmup_epochs: 3}
 synthetic_occlusion: {enabled: false}
 triplet_sampling: {enabled: false}
-sampler:
-  enabled: true
-  strategy: gender_occlusion_balanced_batch
-  bins: [0.0, 0.05, 0.1, 0.2, 0.4, 0.6, 1.0]
 training:
   batch_size: 64
   max_epochs: 20
@@ -87,9 +70,11 @@ augmentation:
   background: {enabled: false}
 inference:
   tta: false
-checkpoint: {monitor: val/score, mode: min, save_top_k: 1, filename: best}
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
-  run_name: cnx_ablation_10_gender_invariant
+  run_name: gender_balanced
   log_images: false
+  log_prediction_plots: true
+sampler: {enabled: false}
+checkpoint: {monitor: val/score, mode: min, save_top_k: 1, filename: best}

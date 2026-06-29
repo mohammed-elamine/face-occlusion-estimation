@@ -1,9 +1,9 @@
-# Ablation 03 — OUTPUT: identity+clip -> sigmoid (only change vs 00_baseline).
+# Ensemble member — OUTPUT: identity+clip -> sigmoid (only change vs baseline.yaml).
 # A bounded sigmoid output cannot overshoot [0,1] and may calibrate better near the 0/1
 # boundaries; the head bias is warm-started from the training mean (logit) automatically.
 project: {name: face-occlusion-estimation, seed: 42, output_dir: outputs, deterministic: false}
 experiment:
-  name: cnx_ablation_03_sigmoid
+  name: sigmoid
   output_root: outputs/experiments
   save_git_info: true
   save_config: true
@@ -71,7 +71,7 @@ inference:
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
-  run_name: cnx_ablation_03_sigmoid
+  run_name: sigmoid
   log_images: false
   log_prediction_plots: true
 sampler: {enabled: false}

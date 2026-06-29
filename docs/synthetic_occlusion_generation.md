@@ -147,7 +147,7 @@ time. Live generation would bottleneck the GPU.
 
 ```bash
 python -m scripts.data.build_synthetic_cache \
-  --config configs/synthetic_ranking/04_ranking_masks_hands.yaml \
+  --config configs/experiments/synthetic_ranking.yaml \
   --cache-dir data/synthetic_cache/masks_hands_v1 \
   --target-min 0.10 --max-per-bin-gender 200
 ```
@@ -215,8 +215,8 @@ synthetic_occlusion:
   seed: 42
 ```
 
-Ready-made configs live under `configs/synthetic_ranking/`: `01` (geometric),
-`02` (masks), `03` (hands), `04` (masks + hands). MediaPipe is the optional
+The ready-made exemplar is `configs/experiments/synthetic_ranking.yaml` (masks + hands —
+one occluder per view). MediaPipe is the optional
 `synthetic` dependency group. When the installed MediaPipe lacks `mp.solutions`
 (the Tasks backend), it needs a Face Landmarker `.task` asset; the provider
 searches `$FACE_OCCLUSION_MEDIAPIPE_FACE_LANDMARKER`, then `models/mediapipe/`,

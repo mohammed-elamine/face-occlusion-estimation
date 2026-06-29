@@ -1,9 +1,9 @@
-# Ablation 01 — CAPACITY: convnext_small -> convnext_base (only change vs 00_baseline).
+# Ensemble member — CAPACITY: convnext_small -> convnext_base (only change vs baseline.yaml).
 # A bigger fully-fine-tuned CNN is the most likely real gain for a model that already works
 # and has plateaued. Watch for overfitting (wd 0.03 helps; raise if val diverges from train).
 project: {name: face-occlusion-estimation, seed: 42, output_dir: outputs, deterministic: false}
 experiment:
-  name: cnx_ablation_01_convnext_base
+  name: convnext_base
   output_root: outputs/experiments
   save_git_info: true
   save_config: true
@@ -71,7 +71,7 @@ inference:
 logging:
   use_wandb: false
   wandb_project: face-occlusion-estimation
-  run_name: cnx_ablation_01_convnext_base
+  run_name: convnext_base
   log_images: false
   log_prediction_plots: true
 sampler: {enabled: false}

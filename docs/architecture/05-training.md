@@ -97,7 +97,7 @@ style). The warmed `weight` ramps the reversal strength. Logged as `train/loss_g
 `train/lambda_gadv` / `train/gadv_acc` (adversary accuracy should **fall toward the gender base rate**
 as invariance improves). Best paired with the gender×occ balanced sampler (`sampler.enabled`) and the
 metric-aligned `gender_balanced` loss (`gender_gap_lambda`) — the full recipe is
-`configs/convnext_ablation/10_gender_invariant.yaml`. Training-only; dropped at inference.
+`configs/experiments/gender_invariant.yaml`. Training-only; dropped at inference.
 
 ### Distribution-aware reweighting (`losses.regression.reweight`)
 

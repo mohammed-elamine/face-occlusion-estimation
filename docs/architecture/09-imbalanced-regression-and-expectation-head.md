@@ -57,7 +57,7 @@ regressor" routers, which fail under our imbalance (the router can't detect the 
   `dldl_kl_loss(bin_logits, soft) + expectation_weight · weighted_mse(y_pred, y)` with
   `soft = soft_label_distribution(targets, model.bin_centers, lds_sigma)`. Validation is
   unchanged — `val/score` already uses `y_pred` (the expectation).
-- **Config:** `configs/convnext_ablation/08_ordinal_expectation_dldl.yaml`
+- **Config:** `configs/ensemble/expectation_dldl.yaml`
   (`head: {type: distribution, n_bins: 21, range: [0,1]}`, `losses.regression: {type: dldl,
   lds_sigma: 0.05, expectation_weight: 1.0}`), champion backbone, seed 42.
 
